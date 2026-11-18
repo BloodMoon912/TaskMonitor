@@ -15,19 +15,22 @@ jobs:
     # job 级 if 不能用 secrets（GitHub 上下文规则），令牌的检查放到 step。
     if: ${{ vars.CNB_REPO != '' }}
     runs-on: ubuntu-latest
+    # secrets 不能出现在 if 里（GitHub 上下文规则），先落到 env 再判断。
+    env:
+      CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # git-sync 需要完整历史
 
       - name: Sync to CNB
-        if: ${{ secrets.CNB_TOKEN != '' }}
+        if: ${{ env.CNB_TOKEN != '' }}
         uses: docker://tencentcom/git-sync
         env:
           PLUGIN_TARGET_URL: ${{ vars.CNB_REPO }}
           PLUGIN_AUTH_TYPE: "https"
           PLUGIN_USERNAME: "cnb"
-          PLUGIN_PASSWORD: ${{ secrets.CNB_TOKEN }}
+          PLUGIN_PASSWORD: ${{ env.CNB_TOKEN }}
           # CNB 侧是纯镜像、从无独有提交，force 保持与 GitHub 完全一致
           PLUGIN_FORCE: "true"
           PLUGIN_PUSH_TAGS: "true"
