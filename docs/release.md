@@ -51,6 +51,8 @@ pwsh -File tools\pack.ps1 -SkipBuild # 复用已有 Release 产物
 
 `tools/new-dev-cert.ps1` 只用于本机验证流程：生成自签代码签名证书、导出到 `certs/`、打印信任它的命令。**别人机器不认**，SmartScreen 照样警告。
 
+`tools/provision-local.ps1` 是「本机安装版」的一键脚本：自签证书 → 导入 `Cert:\CurrentUser\Root` 与 `Cert:\CurrentUser\TrustedPublisher`（只在这台机器上让签名变成 Valid）→ 把 `dist\` 最新产物复制成 `D:\App\TaskMonitor\task_monitor.exe` → 调 `sign.ps1 -Require` 签名 → 写 `build-info.txt` 与 `.sha256`。目标 exe 正在运行时脚本会直接抛错，必须先 `shutdown.sentinel`。证书私钥落在 `certs\`（已 gitignore），换机器要重新跑一次信任步骤。
+
 ## 5. CI：`.github/workflows/release.yml`
 
 | 步骤 | 行为 |

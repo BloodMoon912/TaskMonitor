@@ -40,6 +40,11 @@ Get-AuthenticodeSignature .\task_monitor-2027.11.18.BM-x64.exe | Format-List Sta
 > 本機想先試簽名流程，可跑 `tools/new-dev-cert.ps1` 產生自簽憑證——它只在你自己電腦上有效，
 > 換到別台機器一樣會被當成不明發行者。
 
+**本機安裝版（自簽 + 本機信任）**：`tools\provision-local.ps1` 會建一張自簽程式碼簽署憑證、把它加進
+目前使用者的「受信任的根憑證」與「受信任的發行者」，然後把 `dist\` 的最新產物裝到
+`D:\App\TaskMonitor\task_monitor.exe` 並簽名。裝完資料夾內有 `build-info.txt`（版本、SHA-256、
+簽章狀態、指紋）與 `task_monitor.exe.sha256`。
+
 ## 使用
 
 下載開啟後，**工作列**上會出現常駐的監控覆蓋層（位置取決於工作列設定，可貼左／貼右／垂直任務列）：
