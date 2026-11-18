@@ -55,6 +55,8 @@ through the UI, say so and ask.
 commit` / `--amend` / `push` / `tag` / `reset` without an explicit request — do the work, leave it in
 the working tree, and say it is uncommitted. "Finish the change" (including the docs-sync rule under
 [Maintaining this file](#maintaining-this-file)) means *editing* the files, never committing them.
+**Commit messages are always English** (subject and body), never Chinese — the history is read by
+people who do not read Chinese.
 
 **Editing files here: the shell is Windows PowerShell 5.1 and it is NOT text-safe.**
 `Get-Content`/`Set-Content`/`Out-File`/`>` default to ANSI (GBK here) or UTF-16, so routing a source
