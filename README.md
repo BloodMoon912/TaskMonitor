@@ -108,24 +108,6 @@ assets/                 logo 與 README 圖片
 .github/workflows/      release.yml（tag → 建置 → 打包 → 簽名 → Release）、sync-cnb.yml
 ```
 
-## 倉庫內容分類：哪些會上傳、哪些不會
-
-`.gitignore` 是唯一機制，這裡是給人看的對照表。
-
-| 類別 | 例子 | 進倉庫？ |
-| --- | --- | --- |
-| 原始碼 | `src/**`、`lang/*.yaml`、`tools/*.ps1`、`.github/workflows/**` | ✅ |
-| 專案與建置設定 | `task_monitor.csproj`、`task_monitor.slnx`、`App.config`、`FodyWeavers.xml`、`FodyWeavers.xsd` | ✅ |
-| 文件與授權 | `README.md`、`CHANGELOG.md`、`AGENTS.md`、`docs/**`、`LICENSE` | ✅ |
-| 圖片資產 | `assets/logo.*`、`assets/header.webp`、`assets/taskbar_window.png` | ✅ |
-| 建置產物 | `bin/`、`obj/` | ❌ |
-| 執行期狀態 | `logs/`、`history/`、`settings.yaml`、`shutdown.sentinel` | ❌ |
-| **簽名金鑰** | `*.pfx`、`*.p12`、`*.snk`、`*.pvk`、`certs/`、`.signing/`、`secrets/` | ❌ **永不** |
-| 釋出產物 | `dist/`、`task_monitor-*-x64.exe/.zip/.sha256`、`release-notes.md` | ❌（由 tag 重建） |
-| 本機工具與暫存 | `.vs/`、`.vscode/`、`symbols/`（約 21 MB，不可散布）、`_probe/` | ❌ |
-
-簽名憑證只透過 CI secret（`SIGN_PFX_BASE64`）傳入，**不會**有任何憑證檔進入版控。
-
 ## 建置與開發
 
 只有 `dotnet`（.NET SDK）就夠，不需要 Visual Studio 的 MSBuild：
