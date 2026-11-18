@@ -11,14 +11,23 @@ namespace task_monitor
         public StartupGuideWindow(bool snapToStartSupported)
         {
             InitializeComponent();
+            // i18n: Window.Title and InfoBar.Title/Message are plain string properties — not
+            // TextBlock.Text/Content/Header — so ApplyOnce's tree walk cannot reach them. Set
+            // them through the catalogue here; the Loaded hook translates everything else.
+            Title = Loc.T(Title);
+            TaskbarWarning.Title = Loc.T(TaskbarWarning.Title);
+            TaskbarWarning.Message = Loc.T(TaskbarWarning.Message);
             StartOption.IsEnabled = snapToStartSupported;
             FloatingOption.Checked += ModeOption_Checked;
             TaskbarOption.Checked += ModeOption_Checked;
+            Loaded += (s, e) => Loc.ApplyOnce(this);
         }
 
         private void ModeOption_Checked(object sender, RoutedEventArgs e)
         {
-            PrimaryButton.Content = UseFloatingMode ? "完成" : "下一步";
+            // Loc.T: these are set AFTER Loaded, so ApplyOnce has already run over the tree —
+            // an unwrapped literal would revert to Simplified Chinese on the first click.
+            PrimaryButton.Content = Loc.T(UseFloatingMode ? "完成" : "下一步");
             TaskbarWarning.Visibility = UseFloatingMode ? Visibility.Collapsed : Visibility.Visible;
         }
 
@@ -33,7 +42,7 @@ namespace task_monitor
             ModePage.Visibility = Visibility.Collapsed;
             PlacementPage.Visibility = Visibility.Visible;
             BackButton.Visibility = Visibility.Visible;
-            PrimaryButton.Content = "完成";
+            PrimaryButton.Content = Loc.T("完成");
         }
 
         private void Back_Click(object sender, RoutedEventArgs e)
@@ -41,7 +50,7 @@ namespace task_monitor
             PlacementPage.Visibility = Visibility.Collapsed;
             ModePage.Visibility = Visibility.Visible;
             BackButton.Visibility = Visibility.Collapsed;
-            PrimaryButton.Content = UseFloatingMode ? "完成" : "下一步";
+            PrimaryButton.Content = Loc.T(UseFloatingMode ? "完成" : "下一步");
         }
     }
 }

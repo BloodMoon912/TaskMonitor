@@ -39,6 +39,10 @@ namespace task_monitor
             // The pivot style's invisible Previous scroll button covers the first tab's
             // left 20px and swallows clicks — make it click-through (see helper).
             PivotNavButtonFix.Apply(GpuTabs);
+            GpuTabs.SelectionChanged += (s, e) =>
+            {
+                if (GpuTabs.SelectedItem is GpuInfo g) LastSelectedGpuIndex = g.Index;
+            };
 
             ApplyTheme(dark);
 
@@ -54,10 +58,20 @@ namespace task_monitor
             ProcessKillMenu.Attach(GpuProcessList);
         }
 
+        // Sticky across popup reopens (see DiskDetailView).
+        private static int LastSelectedGpuIndex = -1;
+
         void IDetailView.Refresh(SystemSnapshot s)
         {
             _intervalMs = s.SampleIntervalMs;   // the history tooltip scales tick offsets by it
-            GpuHeaderPercentText.Text = s.GpuAvailable ? $"{s.GpuPercent:F0}%" : "--";
+            // Same header shape as the CPU page: 利用率 · 温度. The temperature is DXCore's
+            // (per 温度来源), so the header and the per-adapter tab rows agree.
+            GpuHeaderPercentText.Text = !s.GpuAvailable
+                ? "--"
+                : s.GpuTempValid
+                    ? $"{s.GpuPercent:F0}% · {s.GpuTempCelsius:F0}°C"
+                    : $"{s.GpuPercent:F0}%";
+            GpuHeaderPercentText.FontSize = s.GpuAvailable && s.GpuTempValid ? 18 : 22;
 
             // 60-tick history, null-padded during warm-up (same shape as CPU/RAM history).
             const int HistoryCapacity = 60;
@@ -80,9 +94,16 @@ namespace task_monitor
             // changes — the selected tab and its content survive every per-second tick.
             if (TabsNeedRebind(s.Gpus))
             {
-                int sel = GpuTabs.SelectedIndex;
+                // Index, not identity — see DiskDetailView: the sampler recreates the adapter
+                // objects on re-enumeration, and an identity match would reset the tab.
+                int keepIndex = GpuTabs.SelectedItem is GpuInfo keep ? keep.Index : -1;
+                if (keepIndex < 0 && GpuTabs.SelectedIndex >= 0 && GpuTabs.SelectedIndex < s.Gpus.Count)
+                    keepIndex = s.Gpus[GpuTabs.SelectedIndex].Index;
+                if (keepIndex < 0) keepIndex = LastSelectedGpuIndex;
                 GpuTabs.ItemsSource = s.Gpus;
-                GpuTabs.SelectedIndex = sel >= 0 && sel < s.Gpus.Count ? sel : 0;
+                int idx = keepIndex >= 0 ? s.Gpus.FindIndex(g => g.Index == keepIndex) : -1;
+                GpuTabs.SelectedIndex = idx >= 0 ? idx : 0;
+                Logger.Debug($"GPU 分页重绑：{s.Gpus.Count} 张，保留选中={(idx >= 0 ? s.Gpus[idx].TabTitle : "无（回第一张）")}");
             }
 
             // Per-process list: resolve each row's icon (cache-backed) and bind.

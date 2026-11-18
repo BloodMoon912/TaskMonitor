@@ -117,7 +117,8 @@ namespace task_monitor
             {
                 string text = $"{source}\r\n\r\n{ex}";
                 if (text.Length > 4000) text = text.Substring(0, 4000) + "\r\n…";
-                MessageBox.Show(text, "TaskMonitor 崩溃", MessageBoxButton.OK, MessageBoxImage.Error);
+                // Only the caption is a catalogue string; the body is the exception itself.
+                MessageBox.Show(text, Loc.T("TaskMonitor 崩溃"), MessageBoxButton.OK, MessageBoxImage.Error);
             }
             catch { }
             finally { Volatile.Write(ref _open, 0); }
@@ -140,7 +141,8 @@ namespace task_monitor
         {
             ContinueRun = !fatal;
 
-            Title = "TaskMonitor 崩溃";
+            // Window.Title is not part of the visual tree, so ApplyOnce cannot reach it.
+            Title = Loc.T("TaskMonitor 崩溃");
             Width = 700; Height = 480;
             MinWidth = 520; MinHeight = 360;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -154,11 +156,15 @@ namespace task_monitor
                 FontSize = 18,
                 FontWeight = FontWeights.SemiBold,
             };
+            // The timestamp/source prefix is runtime data; the two Chinese clauses behind it are
+            // catalogue keys, so the line is assembled through Loc.T instead of being matched as
+            // one (impossible) whole string.
+            string subText = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} · {source}";
+            if (n > 1) subText += " · " + string.Format(Loc.T("本次运行第 {0} 个异常"), n);
+            if (fatal) subText += "\n" + Loc.T("关闭此窗口后进程将退出。");
             var sub = new TextBlock
             {
-                Text = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} · {source}"
-                     + (n > 1 ? $" · 本次运行第 {n} 个异常" : "")
-                     + (fatal ? "\n关闭此窗口后进程将退出。" : ""),
+                Text = subText,
                 FontSize = 12,
                 Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
                 TextWrapping = TextWrapping.Wrap,
@@ -211,6 +217,9 @@ namespace task_monitor
             grid.Children.Add(details);
             grid.Children.Add(buttons);
             Content = grid;
+            // i18n: this window is built in code (no XAML/BAML by design), so it gets the same
+            // one-shot tree walk as the XAML dialogs once it is shown.
+            Loaded += (s, e) => Loc.ApplyOnce(this);
         }
     }
 }

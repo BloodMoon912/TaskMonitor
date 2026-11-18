@@ -81,9 +81,13 @@ namespace task_monitor
             DispatcherUnhandledException += (s, e2) =>
             {
                 e2.Handled = true;
-                if (!CrashReporter.Report("UI 线程未处理异常", e2.Exception, fatal: false, block: true))
+                if (!CrashReporter.Report(Loc.T("dialog.crash.source.ui-thread"), e2.Exception, fatal: false, block: true))
                     Shutdown();
             };
+
+            // 界面語言 / 字體大小 are resolved at the TOP of RunElevationGate, before _config is
+            // even read here — do NOT touch _config in OnStartup: it is still null until the gate
+            // loads it (that exact line was a startup NullReferenceException).
 
             // Elevation gate FIRST: the app is designed to always run elevated, and every
             // unelevated path inside it ends in Shutdown(). This MUST come before the
@@ -171,8 +175,6 @@ namespace task_monitor
                 // render pages resident — see ScheduleIdleTrim / SystemInfo.TrimMemory.
                 SystemInfo.TrimMemory();
             }), System.Windows.Threading.DispatcherPriority.Background);
-
-            UpdateChecker.CheckOnce(_config, TrySaveConfig);
         }
 
         protected override void OnExit(ExitEventArgs e)
@@ -191,6 +193,9 @@ namespace task_monitor
                 _configSaveDebounce.Stop();
                 TrySaveConfig();
             }
+            // 監控歷史: flush completed minutes before the sampler dies (the periodic flush is
+            // every 5 minutes, so a quick exit would otherwise lose the tail).
+            _sampling?.History?.FlushNow();
             _taskbars?.StopAll();
             TaskbarWindow.ReleaseNativeCallChannel();
             _sampling.Stop();
@@ -232,9 +237,11 @@ namespace task_monitor
                 Logger.Warn("读取已运行窗口位置失败", ex);
                 locations = new List<string>();
             }
+            // 兩段文案與換行都在目錄裡（yaml 的值本身帶 \n\n），所以這裡用 Loc.T 取得整句：
+            // 以前字面寫死簡體，英文/繁中介面只會看到簡體，而且把 "\n" 當普通字元印出來。
             string message = locations.Count == 0
-                ? "软件已经在运行，无需重复启动。\n\n窗口目前正在初始化或重建，请稍后再次点击软件查看位置。"
-                : "软件已经在运行，无需重复启动。\n\n当前窗口位置：\n" + string.Join("\n", locations);
+                ? Loc.T("dialog.already-running.rebuilding")
+                : Loc.T("dialog.already-running.location-header") + "\n" + string.Join("\n", locations);
             Logger.Info("收到二次启动通知，显示已运行提示");
             var dialog = new AlreadyRunningDialog(message);
             _alreadyRunningDialog = dialog;
@@ -256,6 +263,13 @@ namespace task_monitor
         private bool RunElevationGate()
         {
             _config = AppSettings.Load();
+            // 界面語言 / 字體大小 / 自定義名稱 must be resolved BEFORE any window is built:
+            // the consent dialog below and the startup guide come up long before StartTaskbar,
+            // and they translate at construction (Loc.ApplyOnce). Setting these there instead
+            // left both of them in Simplified no matter what uiLanguage said.
+            Loc.Current = Loc.Parse(_config.UiLanguage);
+            Loc.Overrides = _config.OverlayLabels;
+            Typography.Apply(_config.UiFontScale ?? Typography.Normal);
             // Theme first, before ANY window exists (the ConsentDialog below included) —
             // re-applied to open windows live via the ActualApplicationThemeChanged hook.
             ApplyThemeSetting();
@@ -340,9 +354,10 @@ namespace task_monitor
                     _config.OverlayOnLeft = guide.OverlayOnLeft ? (bool?)null : false;
                     _config.OverlaySnapToStart = guide.OverlaySnapToStart ? true : (bool?)null;
                 }
-                string placement = guide.UseFloatingMode ? "悬浮窗"
-                    : guide.OverlaySnapToStart ? "任务栏·开始按钮旁"
-                    : guide.OverlayOnLeft ? "任务栏·最左端" : "任务栏·靠近系统托盘";
+                string placement = guide.UseFloatingMode ? Loc.T("dialog.already-running.place.floating")
+                    : guide.OverlaySnapToStart ? Loc.T("dialog.already-running.place.start")
+                    : guide.OverlayOnLeft ? Loc.T("dialog.already-running.place.edge")
+                    : Loc.T("dialog.already-running.place.tray");
                 Logger.Info($"首次启动引导完成：{placement}");
             }
             else
@@ -369,9 +384,14 @@ namespace task_monitor
             };
 
             _taskbars.SetPlacement(_config.OverlayOnLeft != false, _config.OverlaySnapToStart == true);
+            // 界面语言 first: every window/menu built below is translated at construction.
+            Loc.Current = Loc.Parse(_config.UiLanguage);
+            Loc.Overrides = _config.OverlayLabels;   // 自定義名稱 wins over the catalogue
+            Typography.Apply(_config.UiFontScale ?? Typography.Normal);
+            _taskbars.SetOverlayLayoutScale((float)Typography.Scale);
             _taskbars.SetCompactLayout(_config.CompactLayout == true);
-            _taskbars.SetShowSeparators(_config.ShowSeparators != false);
-            _taskbars.SetItemOrder(_config.ItemOrder);
+            _taskbars.SetShowSeparators(_config.ShowSeparators == true);
+            _taskbars.SetItemOrder(EffectiveItemOrder().ToArray());
             _taskbars.SetSampleInterval(_config.SampleIntervalMs ?? 1000);
             _taskbars.SetMetricSamplingMask(SamplingMaskOf(_config));
             _sampling.SetMergeByPath(_config.MergeSamePathProcesses != false);
@@ -379,9 +399,13 @@ namespace task_monitor
             _sampling.SetGpuDisplay(GpuDisplayModeIndexOf(_config), _config.GpuDisplayIndex ?? 0);
             _taskbars.SetGpuTempDisplay(_config.GpuTaskbarContent ?? GpuTaskbarContent.Usage,
                 _config.GpuTempIndex ?? -1, _config.GpuTempUnit == GpuTempUnit.Fahrenheit);
+            _taskbars.SetCpuTaskbarContent(_config.CpuTaskbarContent ?? CpuTaskbarContent.Usage);
             _sampling.SetNetAdapter(_config.NetAdapterId);
             _sampling.SetClashApi(_config.ClashEnabled != false, _config.ClashApiAddress, _config.ClashApiSecret);
             _sampling.SetPublicIpLookup(_config.PublicIpEnabled != false);
+            // CPU temperature pack: on by default, but it only LOADS when a consumer asks
+            // (CpuSensorPack's demand TTL) — this switch just forbids that entirely.
+            _sampling.SetCpuTemperatureEnabled(_config.CpuTemperatureEnabled != false);
 
             _taskbars.SetFloatingMode(_config.FloatingMode == true, _config.FloatingX, _config.FloatingY);
             _taskbars.SetFloatingTopmost(_config.FloatingTopmost != false);
@@ -739,7 +763,7 @@ namespace task_monitor
                 StartupTask.IsEnabled(), OnAutoStartChanged,
                 ThemeIndexOf(_config.Theme), OnThemeChanged,
                 _config.CompactLayout == true, OnCompactLayoutChanged,
-                _config.ShowSeparators != false, OnShowSeparatorsChanged,
+                _config.ShowSeparators == true, OnShowSeparatorsChanged,
                 _config.ItemOrder, OnItemOrderChanged,
                 _config.FloatingMode == true, OnFloatingModeChanged,
                 _config.FloatingTopmost != false, OnFloatingTopmostChanged,
@@ -766,8 +790,6 @@ namespace task_monitor
                 EnumerateNetAdapters(), OnNetAdapterChanged,
                 _config.PublicIpEnabled != false, OnPublicIpLookupChanged,
                 _config.ClashEnabled != false, _config.ClashApiAddress, _config.ClashApiSecret, OnClashApiChanged,
-                _config.UpdateCheckEnabled != false, OnUpdateCheckChanged,
-                UpdateSourceIndexOf(_config), OnUpdateSourceChanged,
                 // The About page's live waveform reads the same latest snapshot.
                 () => _sampling.LatestSnapshot);
             _settings.Closed += (s, e) =>
@@ -808,6 +830,39 @@ namespace task_monitor
             CloseDetail();
         }
 
+        private HistoryWindow _history;
+
+        /// <summary>監控歷史: one window, re-activated on repeat opens. It only reads the
+        /// sampler's minute buckets — it never samples.</summary>
+        private void ShowHistory()
+        {
+            if (_history != null) { _history.Activate(); return; }
+            var store = _sampling?.History;
+            if (store == null)
+            {
+                Logger.WarnOnce("history-no-store", "監控歷史：採樣器尚未就緒");
+                return;
+            }
+            store.PurgeOldFiles();
+            _history = new HistoryWindow(store);
+            _history.Closed += (s, e) => _history = null;
+            _history.Show();
+        }
+
+        // 字體大小: persist + apply. Open popups/windows are recreated per open, so closing them
+        // IS the refresh (same rule as the language switch).
+        private void OnFontScaleChanged(double scale)
+        {
+            if (Math.Abs(Typography.Scale - scale) < 0.01) return;
+            Typography.Apply(scale);
+            _taskbars.SetOverlayLayoutScale((float)scale);
+            _config.UiFontScale = Math.Abs(scale - Typography.Normal) < 0.01 ? (double?)null : scale;
+            TrySaveConfig();
+            CloseDetail();
+            _settings?.Close();
+            CloseMenuHost();                     // rebuilt with the new metrics on the next open
+            Logger.Info($"字體大小切換為 {scale:0.00}");
+        }
         // 设置 外观 → 紧凑模式 (or the right-click menu's checkable item): persist (null =
         // off — only the enabled state is written) and hand the flip to the taskbar thread,
         // whose WM_APP_SET_METRICS resize re-lays the overlay out at once (cells, row pitch
@@ -825,10 +880,29 @@ namespace task_monitor
 
         private void OnShowSeparatorsChanged(bool on)
         {
-            _config.ShowSeparators = on ? (bool?)null : false;
+            _config.ShowSeparators = on ? true : (bool?)null;
             TrySaveConfig();
             _taskbars.SetShowSeparators(on);
             Logger.Info($"显示分割线{(on ? "开启" : "关闭")}——重绘所有覆盖层");
+        }
+
+        // CPU 任务栏显示 (使用率 / 温度) 的舊入口已移除——溫度是 CPU 圖磚的第二列，由
+        // 設定 → 外觀 → 項目順序 的「CPU」那一列控制（CpuTaskbarContent 只剩 yaml 遷移用）。
+
+        // 界面语言 (right-click menu → 语言): persist, then let the next window/menu rebuild
+        // translated. Open popups/windows are closed rather than re-labelled in place — they
+        // are recreated per open by design, so closing IS the refresh.
+        private void OnLanguageChanged(Loc.Lang lang)
+        {
+            if (Loc.Current == lang) return;
+            Loc.Current = lang;
+            _config.UiLanguage = lang == Loc.Lang.ZhCn ? null : Loc.Code(lang);
+            TrySaveConfig();
+            CloseDetail();
+            _settings?.Close();
+            CloseMenuHost();                     // rebuilt (translated) on the next right-click
+            _taskbars.RedrawAll();               // the overlay labels are baked into the draw pass
+            Logger.Info($"界面语言切换为 {Loc.Code(lang)}");
         }
 
         private void OnItemOrderChanged(IReadOnlyList<int> order)
@@ -838,6 +912,105 @@ namespace task_monitor
             TrySaveConfig();
             CloseDetail();
             _taskbars.SetItemOrder(normalized);
+        }
+
+        // ---------- 獨立項目 (溫度 / 顯存 rows as their own orderable slots) ----------
+
+        /// <summary>
+        /// The item list the overlay actually uses. Legacy configs expressed "show the GPU
+        /// temperature instead of its utilization" through GpuTaskbarContent / CpuTaskbarContent;
+        /// those modes are now just extra SLOTS (5 CPU 溫度, 6 GPU 溫度, 7 GPU 顯存), so a legacy
+        /// yaml keeps working without rewriting the user's file: the mode is folded into the
+        /// order the first time the app reads it.
+        /// </summary>
+        private List<int> EffectiveItemOrder()
+        {
+            var order = _config.ItemOrder != null
+                ? new List<int>(_config.ItemOrder)
+                : new List<int>(TaskbarWindow.StandardItemOrder);
+
+            // CPU: 溫度 replaces the utilization row in the old model → becomes its own slot.
+            if (_config.CpuTaskbarContent == CpuTaskbarContent.Temperature)
+            {
+                int at = order.IndexOf(0);
+                if (at >= 0 && !order.Contains(5)) order[at] = 5;
+                else if (!order.Contains(5)) order.Add(5);
+            }
+
+            // GPU: 溫度 / 显存 / 两者 → their own slot(s) next to the utilization row.
+            switch (_config.GpuTaskbarContent)
+            {
+                case GpuTaskbarContent.Temperature:
+                    {
+                        int at = order.IndexOf(3);
+                        if (at >= 0 && !order.Contains(6)) order[at] = 6;
+                        else if (!order.Contains(6)) order.Add(6);
+                        break;
+                    }
+                case GpuTaskbarContent.Both:
+                    if (!order.Contains(6))
+                    {
+                        int at = order.IndexOf(3);
+                        order.Insert(at >= 0 ? at + 1 : order.Count, 6);
+                    }
+                    break;
+                case GpuTaskbarContent.Vram:
+                    {
+                        int at = order.IndexOf(3);
+                        if (at >= 0 && !order.Contains(7)) order[at] = 7;
+                        else if (!order.Contains(7)) order.Add(7);
+                        break;
+                    }
+            }
+            return PairWithAnchors(order);
+        }
+
+        // The overlay packs the order TWO ROWS PER CELL, so adjacency IS the pairing: an item that
+        // lands right after another shares its cell and stacks underneath it. 溫度 (5) therefore
+        // has to sit directly after CPU 使用率 (0), and GPU 溫度 (6) / 显存 (7) directly after GPU
+        // 使用率 (3) — the report 「你應該將溫度和 cpu 或 gpu 的佔用上下共同一格」. The stored order
+        // comes from the settings page's drag list, which lets a user drop 溫度 anywhere, so this
+        // normalises it on every read instead of trusting the file. An attached slot whose anchor
+        // row is switched off keeps its place in the list (its metric's mask bit hides it anyway);
+        // dropping it would make it unreachable from the settings list.
+        private static List<int> PairWithAnchors(List<int> order)
+        {
+            int[] attached = { 5, 6, 7 };
+            bool anyAttached = false;
+            foreach (int slot in attached)
+                if (order.Contains(slot)) anyAttached = true;
+            if (!anyAttached) return order;
+
+            var paired = new List<int>(order.Count + 3);
+            foreach (int slot in order)
+            {
+                if (Array.IndexOf(attached, slot) >= 0) continue;   // re-inserted under its anchor
+                paired.Add(slot);
+                if (slot == 0 && order.Contains(5)) paired.Add(5);
+                if (slot == 3)
+                {
+                    if (order.Contains(6)) paired.Add(6);
+                    if (order.Contains(7)) paired.Add(7);
+                }
+            }
+            foreach (int slot in attached)
+                if (order.Contains(slot) && !paired.Contains(slot)) paired.Add(slot);
+            return paired;
+        }
+
+        // Drops the right-click menu together with the invisible 1×1 window that hosts it, so the
+        // next right-click rebuilds both (that is what makes a language or layout change visible).
+        //
+        // The host used to be leaked: `_menuHost` was only ever assigned and `_taskbarMenu = null`
+        // left the window shown forever, so every right-click after the first language/font change
+        // left one more invisible topmost window behind. Closing the menu first matters — closing
+        // the host while its menu is open would leave WPF dismissing a live popup.
+        private void CloseMenuHost()
+        {
+            _taskbarMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
+            _taskbarMenu = null;
+            _menuHost?.Close();
+            _menuHost = null;
         }
 
         // 设置 外观 → 悬浮模式 (or the right-click menu's checkable item): persist (null =
@@ -1027,10 +1200,11 @@ namespace task_monitor
         // ---------- 设置 → 采样 → GPU: 任务栏显示 / 温度来源 / 温度单位 ----------
 
         // yaml GpuTaskbarContent ↔ the 任务栏显示 combo index (0=使用率 = yaml null, the
-        // default; 1=温度 2=使用率+温度).
+        // default; 1=温度 2=使用率+温度 3=显存).
         private static int GpuTaskbarContentIndexOf(AppSettings c)
             => c.GpuTaskbarContent == GpuTaskbarContent.Temperature ? 1
-               : c.GpuTaskbarContent == GpuTaskbarContent.Both ? 2 : 0;
+               : c.GpuTaskbarContent == GpuTaskbarContent.Both ? 2
+               : c.GpuTaskbarContent == GpuTaskbarContent.Vram ? 3 : 0;
 
         // yaml GpuTempUnit ↔ the 温度单位 combo index (0=摄氏度 = yaml null, the default).
         private static int GpuTempUnitIndexOf(AppSettings c)
@@ -1045,6 +1219,7 @@ namespace task_monitor
         {
             var content = contentIndex == 1 ? GpuTaskbarContent.Temperature
                         : contentIndex == 2 ? GpuTaskbarContent.Both
+                        : contentIndex == 3 ? GpuTaskbarContent.Vram
                         : GpuTaskbarContent.Usage;
             _config.GpuTaskbarContent = content == GpuTaskbarContent.Usage ? (GpuTaskbarContent?)null : content;
             _config.GpuTempIndex = tempIndex >= 0 ? tempIndex : (int?)null;   // -1/absent = 最高温度
@@ -1118,28 +1293,6 @@ namespace task_monitor
             _taskbars.SetPublicIpLookup(on);
         }
 
-        // ---------- 设置 → 通用: 检查更新 / 更新源 ----------
-
-        // yaml UpdateSource ↔ the settings combo index (0=CNB = yaml null, the default —
-        // only "github" is ever written; 1=GitHub).
-        private static int UpdateSourceIndexOf(AppSettings c)
-            => string.Equals(c.UpdateSource, "github", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-
-        // 检查更新 toggle: persist (null = on, the default — only the disabled state is
-        // written). Takes effect on the next startup (the check runs once per launch).
-        private void OnUpdateCheckChanged(bool on)
-        {
-            _config.UpdateCheckEnabled = on ? (bool?)null : false;
-            TrySaveConfig();
-        }
-
-        // 更新源 combo: persist (null = CNB, the default — only "github" is written).
-        private void OnUpdateSourceChanged(int index)
-        {
-            _config.UpdateSource = index == 1 ? "github" : null;
-            TrySaveConfig();
-        }
-
         // ---------- 设置 → 采样: per-metric sampling switches ----------
 
         // 设置 → 采样 toggles ↔ the SystemSampler mask (one bit per overlay hit slot;
@@ -1194,9 +1347,15 @@ namespace task_monitor
             // MenuItem flips IsChecked before Click fires, so the handler reads the new
             // state). Their checkmarks are refreshed on every open below — the settings
             // window can change them too.
+            //
+            // 語言：這裡一律用 Loc.T("<id>") 取字串，不要寫簡體字面。ContextMenu 開在
+            // PopupRoot，是獨立的視覺樹，Loc.ApplyOnce(Window) 永遠走不到它，所以視覺樹
+            // 翻譯救不回來；而字面反查（Loc.ByText）只在該字面的 zh-CN 值被單一 id 獨佔時
+            // 才成立，同值多 id 會被判歧義並整組剔除。語言切換後重建（OnLanguageChanged 把
+            // _taskbarMenu 設為 null）會讓下一次右鍵拿到新語言的譯文。
             _menuFloating = new MenuItem
             {
-                Header = "悬浮模式",
+                Header = Loc.T("menu.floating"),
                 IsCheckable = true,
                 Icon = new FontIcon { Icon = FluentSystemIcons.WindowMultiple_16_Regular, FontSize = 16 },
             };
@@ -1205,7 +1364,7 @@ namespace task_monitor
 
             _menuFloatingTopmost = new MenuItem
             {
-                Header = "置顶显示",
+                Header = Loc.T("menu.floating.topmost"),
                 IsCheckable = true,
                 Icon = new FontIcon { Icon = FluentSystemIcons.Pin_16_Regular, FontSize = 16 },
             };
@@ -1214,7 +1373,7 @@ namespace task_monitor
 
             _menuFloatingEdgeHide = new MenuItem
             {
-                Header = "贴边隐藏",
+                Header = Loc.T("menu.floating.edge-hide"),
                 IsCheckable = true,
                 Icon = new FontIcon { Icon = FluentSystemIcons.PanelLeftContract_16_Regular, FontSize = 16 },
             };
@@ -1223,7 +1382,7 @@ namespace task_monitor
 
             _menuFloatingFullscreenHide = new MenuItem
             {
-                Header = "全屏时隐藏",
+                Header = Loc.T("menu.floating.fullscreen-hide"),
                 IsCheckable = true,
                 Icon = new FontIcon { Icon = FluentSystemIcons.FullScreenMinimize_16_Regular, FontSize = 16 },
             };
@@ -1237,7 +1396,7 @@ namespace task_monitor
             // between them (it belongs to neither group).
             _menuCompact = new MenuItem
             {
-                Header = "紧凑模式",
+                Header = Loc.T("menu.compact"),
                 IsCheckable = true,
                 // Same glyph as the settings card's HeaderIcon; the icon set ships no _16_
                 // variant of TextColumnOneNarrow, so the 20-px glyph renders at the menu's
@@ -1246,6 +1405,53 @@ namespace task_monitor
             };
             _menuCompact.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
             _menuCompact.Click += (s, e) => OnCompactLayoutChanged(_menuCompact.IsChecked);
+
+            // CPU 温度不再由右鍵選單控制：它是 CPU 圖磚的第二列，屬於 設定 → 外觀 → 項目順序 的
+            // 「CPU」那一列（顯示項目裏面的所有東西不應該在右鍵選單控制）。
+
+            // 语言 (i18n): three flat checkable children in a submenu. The language lives in
+            // settings.yaml and is applied when a window/menu is BUILT — see Loc.ApplyOnce.
+            var language = new MenuItem { Header = Loc.T("menu.language") };
+            language.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
+            MenuItem LanguageItem(string label, Loc.Lang lang)
+            {
+                var item = new MenuItem { Header = label, IsCheckable = true, IsChecked = Loc.Current == lang, Tag = lang };
+                item.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
+                item.Click += (s, e) => OnLanguageChanged((Loc.Lang)item.Tag);
+                return item;
+            }
+            // 語言名稱用 id 取：zh-CN 目錄裡這三條的值本身就是「簡體中文/繁體中文/English」
+            // 的自稱，id 才會在切到英文介面時一起換成 English（值恰好相同也不影響）。
+            language.Items.Add(LanguageItem(Loc.T("menu.language.zh-cn"), Loc.Lang.ZhCn));
+            language.Items.Add(LanguageItem(Loc.T("menu.language.zh-tw"), Loc.Lang.ZhTw));
+            language.Items.Add(LanguageItem(Loc.T("menu.language.en"), Loc.Lang.En));
+
+            // 字體大小: WPF windows only (see Typography — the native overlay's 44-DIP block
+            // cannot absorb more than ~4 % inside the ~48-DIP taskbar band).
+            var fontMenu = new MenuItem { Header = Loc.T("menu.font-size") };
+            fontMenu.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
+            MenuItem FontItem(string label, double scale)
+            {
+                var item = new MenuItem { Header = label, IsCheckable = true, IsChecked = Math.Abs(Typography.Scale - scale) < 0.01, Tag = scale };
+                item.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
+                item.Click += (s, e) => OnFontScaleChanged((double)item.Tag);
+                return item;
+            }
+            // 字級名稱同樣走 id：zh-CN 目錄的值是繁體字形（"標準"/"較大"/"特大"/"較小"），
+            // 以字面反查（Loc.ByText）在繁中/英文介面要靠簡字值命中，容易撞歧義；
+            // id 直接命中各語言自己的譯文。
+            fontMenu.Items.Add(FontItem(Loc.T("menu.font-size.normal"), Typography.Normal));
+            fontMenu.Items.Add(FontItem(Loc.T("menu.font-size.large"), Typography.Large));
+            fontMenu.Items.Add(FontItem(Loc.T("menu.font-size.xlarge"), Typography.ExtraLarge));
+            fontMenu.Items.Add(FontItem(Loc.T("menu.font-size.small"), Typography.Small));
+
+            // 顯示項目 moved into 設定 → 外觀 → 項目順序 (one card per slot, with its switch) —
+            // 「顯示項目裏面的所有東西不應該在右鍵選單控制」. The taskbar menu only carries actions
+            // that change how the overlay LOOKS, never which metrics exist.
+
+            var historyItem = new MenuItem { Header = Loc.T("menu.metric.history") };
+            historyItem.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
+            historyItem.Click += (s, e) => ShowHistory();
 
             Separator NewSeparator()
             {
@@ -1256,7 +1462,7 @@ namespace task_monitor
 
             var settings = new MenuItem
             {
-                Header = "设置",
+                Header = Loc.T("menu.settings"),
                 Icon = new FontIcon { Icon = FluentSystemIcons.Settings_16_Regular, FontSize = 16 },
             };
             settings.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
@@ -1264,7 +1470,7 @@ namespace task_monitor
 
             var exit = new MenuItem
             {
-                Header = "退出",
+                Header = Loc.T("menu.exit"),
                 Icon = new FontIcon { Icon = FluentSystemIcons.DoorArrowLeft_16_Regular, FontSize = 16 },
             };
             exit.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
@@ -1278,6 +1484,9 @@ namespace task_monitor
             _taskbarMenu.Items.Add(_menuFloatingFullscreenHide);
             _taskbarMenu.Items.Add(NewSeparator());
             _taskbarMenu.Items.Add(_menuCompact);
+            _taskbarMenu.Items.Add(language);
+            _taskbarMenu.Items.Add(fontMenu);
+            _taskbarMenu.Items.Add(historyItem);
             _taskbarMenu.Items.Add(NewSeparator());
             _taskbarMenu.Items.Add(settings);
             _taskbarMenu.Items.Add(exit);
@@ -1327,7 +1536,11 @@ namespace task_monitor
 
             // The host must be activated for "click elsewhere → close" to work.
             // When it deactivates (user clicked another window), close the menu.
-            _menuHost.Deactivated += (s, e) => _taskbarMenu.IsOpen = false;
+            // Null-guarded: CloseMenuHost() drops the menu while this host is still deactivating.
+            _menuHost.Deactivated += (s, e) =>
+            {
+                if (_taskbarMenu != null) _taskbarMenu.IsOpen = false;
+            };
         }
     }
 }

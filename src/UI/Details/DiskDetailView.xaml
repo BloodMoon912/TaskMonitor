@@ -5,12 +5,17 @@
              xmlns:ikw="http://schemas.inkore.net/lib/ui/wpf"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
              xmlns:local="clr-namespace:task_monitor"
+             xmlns:loc="clr-namespace:task_monitor.Localization"
              xmlns:fluent="clr-namespace:FluentWpfCore.Controls;assembly=FluentWpfCore"
              Background="Transparent">
 
     <UserControl.Resources>
         <local:NetRateConverter x:Key="NetRate" />
         <local:DiskKindConverter x:Key="DiskKind" />
+        <!-- 行程列的 TagText（「服务」「服务组」「×N」）是取樣端組出來的資料字串，不是本地屬性，
+             ApplyOnce 走的是 ByText 且跳過綁定，所以只能靠轉換器在取值時翻譯——其他四個詳情頁
+             早就這樣綁，磁碟頁之前漏了，這也是「磁碟沒翻好」的一部分。 -->
+        <loc:LocTextConverter x:Key="LocText" />
     </UserControl.Resources>
 
     <ikw:SimpleStackPanel Spacing="12">
@@ -22,7 +27,7 @@
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                 <ui:FontIcon FontSize="24" VerticalAlignment="Center" Margin="0,3,8,0"
                              Icon="{x:Static ui:FluentSystemIcons.HardDrive_20_Regular}" />
-                <TextBlock Text="磁盘" FontSize="22"
+                <TextBlock Text="{loc:Tr detail.tab.disk}" FontSize="22"
                            VerticalAlignment="Center" />
                 <ContentControl x:Name="PinSlotHost" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
@@ -47,7 +52,7 @@
              Tab content updates via INotifyPropertyChanged on DiskInfo, so the
              ItemsSource only rebinds when the disk SET changes (hot-plug) and the
              selected tab survives every 1s tick. -->
-        <TabControl x:Name="DiskTabs" Background="Transparent" BorderThickness="0"
+        <TabControl x:Name="DiskTabs" Background="Transparent" BorderThickness="0" IsSynchronizedWithCurrentItem="False"
                     Style="{DynamicResource TabControlPivotStyle}">
             <TabControl.Resources>
                 <sys:Double x:Key="PivotHeaderItemFontSize">13</sys:Double>
@@ -69,59 +74,85 @@
                     <!-- NOTE: net48's Run.Text is NOT a dependency property (bindable only
                          on .NET Core 3.0+), so label:value rows are two TextBlocks, not
                          Runs — a binding on a Run crashes InitializeComponent. -->
-                    <ikw:SimpleStackPanel Spacing="8" Margin="0,10,0,2">
-                        <!-- Row 1 (full width): 名称 model string -->
-                        <Grid>
+                    <!-- 統計格：與 CPU／記憶體／GPU／網路四頁共用同一套規範——兩欄等寬、一格只放一個
+                         量、標籤次要色／值主要色。名稱與容量獨占兩欄（名稱是機型字串、容量可能長到
+                         「已用 1.34 TB / 共 3.64 TB」），其餘四列成對：類型｜利用率、讀取｜寫入、
+                         響應時間｜溫度。 -->
+                    <Grid Margin="0,10,0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Row 0 (獨占兩欄): 名稱 -->
+                        <Grid Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="名称：" FontSize="12"
+                            <TextBlock Grid.Column="0" Text="{loc:Tr detail.disk.label.name}" FontSize="12"
                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                             <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="12"
                                        TextTrimming="CharacterEllipsis" />
                         </Grid>
-                        <!-- Row 2: 类型 | 利用率 -->
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                <TextBlock Text="类型：" FontSize="12"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{Binding Kind, Converter={StaticResource DiskKind}}" FontSize="12" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <TextBlock Text="利用率：" FontSize="12"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{Binding UtilPercent, StringFormat={}{0:F0}%}" FontSize="12" />
-                            </StackPanel>
-                        </Grid>
-                        <!-- Row 3: 读取速度 | 写入速度 -->
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                <TextBlock Text="读取速度：" FontSize="12"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{Binding ReadBytesPerSec, Converter={StaticResource NetRate}}" FontSize="12" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <TextBlock Text="写入速度：" FontSize="12"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{Binding WriteBytesPerSec, Converter={StaticResource NetRate}}" FontSize="12" />
-                            </StackPanel>
-                        </Grid>
-                        <!-- Row 4: 平均响应时间 -->
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="平均响应时间：" FontSize="12"
+
+                        <!-- Row 1: 類型 | 利用率 -->
+                        <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Margin="0,0,8,8">
+                            <TextBlock Text="{loc:Tr detail.disk.label.kind}" FontSize="12"
                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                            <TextBlock Text="{Binding ResponseMs, StringFormat={}{0:F1} ms}" FontSize="12" />
+                            <TextBlock Text="{Binding Kind, Converter={StaticResource DiskKind}}" FontSize="12"
+                                       TextWrapping="Wrap" />
                         </StackPanel>
-                    </ikw:SimpleStackPanel>
+                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="{loc:Tr detail.gpu.label.usage}" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding UtilPercent, StringFormat={}{0:F0}%}" FontSize="12"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <!-- Row 2: 讀取速度 | 寫入速度 -->
+                        <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Margin="0,0,8,8">
+                            <TextBlock Text="{loc:Tr detail.disk.label.read-speed}" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding ReadBytesPerSec, Converter={StaticResource NetRate}}"
+                                       FontSize="12" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="{loc:Tr detail.disk.label.write-speed}" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding WriteBytesPerSec, Converter={StaticResource NetRate}}"
+                                       FontSize="12" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <!-- Row 3: 平均響應時間 | 溫度 (SMART, on-demand sensor pack — per DISK, so the
+                             label needs no device name; one measurement point only) -->
+                        <StackPanel Grid.Row="3" Grid.Column="0" Orientation="Horizontal" Margin="0,0,8,8">
+                            <TextBlock Text="{loc:Tr detail.disk.label.response-time}" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding ResponseMs, StringFormat={}{0:F1} ms}" FontSize="12"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="{loc:Tr detail.gpu.label.temp}" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding TemperatureText}" FontSize="12" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <!-- Row 4 (獨占兩欄): 容量 (sum of the mounted volumes' own total/free — the number
+                             users compare against Explorer, not the raw device length) -->
+                        <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal">
+                            <TextBlock Text="{loc:Tr detail.disk.capacity.label}" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding CapacityText}" FontSize="12" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Grid>
                 </DataTemplate>
             </TabControl.ContentTemplate>
         </TabControl>
@@ -140,11 +171,11 @@
                         <ColumnDefinition Width="14" />
                         <ColumnDefinition Width="72" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="高占用进程" FontSize="12"
+                    <TextBlock Grid.Column="0" Text="{loc:Tr detail.common.top-processes.title}" FontSize="12"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Grid.Column="1" Text="读取" FontSize="12" TextAlignment="Right"
+                    <TextBlock Grid.Column="1" Text="{loc:Tr detail.disk.label.read}" FontSize="12" TextAlignment="Right"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Grid.Column="3" Text="写入" FontSize="12" TextAlignment="Right"
+                    <TextBlock Grid.Column="3" Text="{loc:Tr detail.disk.label.write}" FontSize="12" TextAlignment="Right"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 </Grid>
                 <!-- Fixed height so the window (SizeToContent=Height) stays stable across
@@ -184,7 +215,7 @@
                                                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                                                 BorderThickness="1"
                                                 Visibility="{Binding TagVisibility}">
-                                            <TextBlock Text="{Binding TagText}" FontSize="10"
+                                            <TextBlock Text="{Binding TagText, Converter={StaticResource LocText}}" FontSize="10"
                                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                         </Border>
                                     </local:FollowTagPanel>

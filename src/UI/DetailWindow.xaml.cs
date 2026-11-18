@@ -58,6 +58,7 @@ namespace task_monitor
         {
             _sampling = sampling ?? throw new ArgumentNullException(nameof(sampling));
             InitializeComponent();
+            ApplyUiScale();
             _owner = owner;
 
             // The pin toggle is declared in the shell but shown inside the hosted view's
@@ -271,7 +272,17 @@ namespace task_monitor
             // never calls it, which keeps the taskbar location indicator off otherwise. Prewarm
             // builds views directly (not via ShowColumn), so this never fires at startup.
             if (column == 4) _sampling.RequestWifiDetails();
+            // CPU / 磁盘 panels display hardware sensors from the on-demand pack, so they
+            // own its demand window: the view's per-tick Refresh keeps refreshing this, and
+            // closing the window unloads LibreHardwareMonitor two minutes later with nothing
+            // else to remember (SensorPack's TTL design).
+            if (column == 0 || column == 2) _sampling.RequestCpuTemperature();
             ContentHost.Content = _current;
+            // i18n: translate the freshly built page once it has a visual tree (Loaded fires
+            // after layout). Detail pages are recreated per open, so a language switch simply
+            // shows up in the next popup — no live bindings needed.
+            if (_current is FrameworkElement currentView)
+                currentView.Loaded += (s2, e2) => Loc.ApplyOnce((DependencyObject)s2);
 
             // Park the pin toggle in the fresh view's header slot (right of its title).
             // Detach from the previous view's slot first — an element can't have two
@@ -456,10 +467,32 @@ namespace task_monitor
         private int _taskbarEdge;
 
         // ---------- Live data (refresh the hosted view) ----------
-        internal void Refresh()
+        /// <summary>
+        /// 字體大小 (设置 → 外观 → 字體大小 / 右键菜单): a LayoutTransform zoom of the whole
+        /// card, plus a matching window width. The popup is SizeToContent=Height with a fixed
+        /// width, so scaling the content alone would clip it horizontally.
+        ///
+        /// Scope is deliberately the WPF side only. The native taskbar overlay CANNOT scale
+        /// beyond ~1.04: its two-line block is 44 DIP inside a ~48 DIP taskbar band, and the
+        /// text lines are measured at 13 px — a larger font would collide with the band, not
+        /// merely look different. That limit is why the overlay keeps its 13 px type.
+        /// </summary>
+        private void ApplyUiScale()
         {
+            double scale = Typography.Scale;
+            if (scale <= 0 || Math.Abs(scale - 1.0) < 0.01) return;
+            RootBorder.LayoutTransform = new ScaleTransform(scale, scale);
+            Width = 360 * scale;
+        }
+
+        internal void Refresh()        {
             var s = _sampling.LatestSnapshot;
             if (s == null) return; // sampler hasn't produced a snapshot yet
+            // Keep the sensor pack's demand window alive while this panel is open — the sample
+            // is already up to two seconds old by the time it reaches the view, so the refresh
+            // must happen BEFORE the view reads the snapshot. CPU (0) and 磁盘 (2) both show
+            // pack-provided sensors; the GPU page's extras come from NVML and need no demand.
+            if (_column == 0 || _column == 2) _sampling.RequestCpuTemperature();
             _current?.Refresh(s);
         }
 
@@ -514,7 +547,7 @@ namespace task_monitor
             if (pinned) _owner?.RequestDeselect(_column);
             else _owner?.RequestSelect(_column);
             PinIcon.Icon = pinned ? FluentSystemIcons.Pin_16_Filled : FluentSystemIcons.Pin_16_Regular;
-            PinButton.ToolTip = pinned ? "取消固定" : "固定";
+            PinButton.ToolTip = Loc.T(pinned ? "取消固定" : "固定");
             PinStateChanged?.Invoke(this, pinned);
         }
 

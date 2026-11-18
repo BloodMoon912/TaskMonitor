@@ -48,6 +48,7 @@ namespace task_monitor
         private readonly Action<bool> _showSeparatorsChanged; // 显示分割线 (taskbar + floating)
         private readonly Action<IReadOnlyList<int>> _itemOrderChanged;
         private readonly List<MetricOrderItem> _itemOrderItems = new List<MetricOrderItem>();
+        private bool _populatingItemOrder;   // suppresses the toggles we create ourselves
         private MetricOrderItem _dragItem;
         private Point _dragStart;
         private readonly Action<bool> _floatingChanged;       // 悬浮模式 (the whole form flips)
@@ -65,8 +66,6 @@ namespace task_monitor
         private readonly Action<string, string> _netAdapterChanged; // (adapter Id or "" = 自动, display name)
         private readonly Action<bool> _publicIpLookupChanged;       // 公网 IP lookup
         private readonly Action<bool, string, string> _clashApiChanged; // (enabled, controller address or "" = default, API secret)
-        private readonly Action<bool> _updateCheckChanged;  // 检查更新
-        private readonly Action<int> _updateSourceChanged;  // 0=CNB 1=GitHub
         // Reads SamplingController's latest snapshot — the About page's live
         // CPU waveform; the same single-source push model as the detail windows.
         private readonly Func<SystemSnapshot> _snapshotProvider;
@@ -82,8 +81,28 @@ namespace task_monitor
 
         private sealed class MetricOrderItem
         {
-            public int Slot { get; set; }
+            /// <summary>Slots this row controls. One for most metrics; TWO for a TILE — 使用率 and
+            /// 溫度 of the same device share one taskbar cell (one title, two values), so they are
+            /// also one row here: one switch, one drag.</summary>
+            public int[] Slots { get; set; }
             public string Name { get; set; }
+            /// <summary>Whether the row currently contributes slots to the taskbar order. Kept on
+            /// the item so <see cref="CurrentItemOrder"/> can flatten on-tiles only.</summary>
+            public bool On { get; set; }
+        }
+
+        /// <summary>The taskbar cell a slot belongs to — a TILE for 使用率+溫度 of one device, a
+        /// single slot for everything else. 項目順序 lists tiles, never raw slots.</summary>
+        private static int[] TileOf(int slot)
+        {
+            switch (slot)
+            {
+                case 0:
+                case 5: return new[] { 0, 5 };   // CPU 使用率 + CPU 溫度
+                case 3:
+                case 6: return new[] { 3, 6 };   // GPU 使用率 + GPU 溫度
+                default: return new[] { slot };
+            }
         }
 
         /// <param name="overlayOnLeft">Effective 靠左显示 state (yaml null = the left default).</param>
@@ -96,7 +115,7 @@ namespace task_monitor
         /// <param name="compactLayout">Current 紧凑模式 state (yaml null = the off default).</param>
         /// <param name="compactLayoutChanged">Reported with the requested on/off — applied
         /// live (the overlay re-lays out and resizes at once; both forms follow).</param>
-        /// <param name="showSeparators">Current 显示分割线 state (yaml null = the on default).</param>
+        /// <param name="showSeparators">Current 显示分割线 state (yaml null = the off default).</param>
         /// <param name="showSeparatorsChanged">Reported with the requested on/off — redraws
         /// both overlay forms without changing their layout.</param>
         /// <param name="itemOrder">Current slot order, shared by the taskbar and floating forms.</param>
@@ -104,7 +123,7 @@ namespace task_monitor
         /// <param name="floatingMode">Current 悬浮模式 state (yaml null = the off default).</param>
         /// <param name="floatingChanged">Reported with the requested on/off — App rebuilds the
         /// overlay window in its other form (taskbar child ⟷ desktop widget).</param>
-        /// <param name="floatingTopmost">Current 置顶显示 state (yaml null = the on default);
+        /// <param name="floatingTopmost">Current 置顶显示 state (yaml null = the off default);
         /// floating form only.</param>
         /// <param name="floatingTopmostChanged">Reported with the requested on/off — applied
         /// live (no rebuild).</param>
@@ -126,7 +145,7 @@ namespace task_monitor
         /// <param name="samplingMask">Current per-metric sampling mask (SystemSampler.Mask*
         /// bits, in overlay hit-slot order).</param>
         /// <param name="samplingChanged">Reported with (slot, enabled) on every 采样 toggle.</param>
-        /// <param name="mergeSamePath">Current 合并相同程序 state (yaml null = the on default).</param>
+        /// <param name="mergeSamePath">Current 合并相同程序 state (yaml null = the off default).</param>
         /// <param name="diskDisplayIndex">Current 磁盘显示方式 combo index: 0=所有磁盘平均
         /// (yaml null) 1=最高利用率 2=特定磁盘.</param>
         /// <param name="pickedDiskIndex">The PhysicalDrive index the 特定磁盘 picker shows
@@ -170,10 +189,6 @@ namespace task_monitor
         /// <param name="clashApiSecret">The controller's API secret; null/empty = none.</param>
         /// <param name="clashApiChanged">Reported with (enabled, address or "" = default,
         /// secret) — the switch reports immediately, text edits debounced 500ms.</param>
-        /// <param name="updateCheckOn">Current 检查更新 state (yaml null = the on default).</param>
-        /// <param name="updateCheckChanged">Reported with the requested on/off — takes
-        /// effect on the next startup (the check runs once per launch).</param>
-        /// <param name="updateSourceIndex">0=CNB (yaml null, the default) 1=GitHub.</param>
         /// <param name="snapshotProvider">Reads TaskbarWindow's LatestSnapshot (App's
         /// lambda) — the About page's live CPU waveform.</param>
         // internal: the signature mentions internal sampler types — App (same assembly) is
@@ -209,11 +224,13 @@ namespace task_monitor
             bool publicIpLookupOn, Action<bool> publicIpLookupChanged,
             bool clashEnabled, string clashApiAddress, string clashApiSecret,
             Action<bool, string, string> clashApiChanged,
-            bool updateCheckOn, Action<bool> updateCheckChanged,
-            int updateSourceIndex, Action<int> updateSourceChanged,
             Func<SystemSnapshot> snapshotProvider)
         {
             InitializeComponent();
+            // i18n: the settings shell is built once per open; translate after its visual tree
+            // exists (a language switch closes this window and the next open is translated).
+            Loaded += (s, e) => Loc.ApplyOnce(this);
+            Loaded += (s, e) => ApplyUiScale();
             _placementChanged = placementChanged;
             _displaySelectionChanged = displaySelectionChanged;
             _autoStartChanged = autoStartChanged;
@@ -236,8 +253,6 @@ namespace task_monitor
             _netAdapterChanged = netAdapterChanged;
             _publicIpLookupChanged = publicIpLookupChanged;
             _clashApiChanged = clashApiChanged;
-            _updateCheckChanged = updateCheckChanged;
-            _updateSourceChanged = updateSourceChanged;
             _snapshotProvider = snapshotProvider;
 
             OnLeftSwitch.IsOn = overlayOnLeft;
@@ -308,71 +323,183 @@ namespace task_monitor
             GpuPickCombo.IsEnabled = GpuDisplayCombo.SelectedIndex == 2;
             // 任务栏显示 + its two temperature sub-cards; the sub-cards are enabled only
             // while a temperature actually shows (the DiskPickCombo pattern).
-            GpuContentCombo.SelectedIndex = gpuContentIndex < 0 || gpuContentIndex > 2 ? 0 : gpuContentIndex;
+            GpuContentCombo.SelectedIndex = gpuContentIndex < 0 || gpuContentIndex > 3 ? 0 : gpuContentIndex;
             PopulateGpuTempPicker(gpus, pickedGpuTempIndex);
             GpuTempUnitCombo.SelectedIndex = gpuTempUnitIndex == 1 ? 1 : 0;
-            GpuTempPickCombo.IsEnabled = GpuContentCombo.SelectedIndex != 0;
-            GpuTempUnitCombo.IsEnabled = GpuContentCombo.SelectedIndex != 0;
+            GpuTempPickCombo.IsEnabled = GpuContentCombo.SelectedIndex == 1 || GpuContentCombo.SelectedIndex == 2;
+            GpuTempUnitCombo.IsEnabled = GpuContentCombo.SelectedIndex == 1 || GpuContentCombo.SelectedIndex == 2;
             PopulateNetAdapterPicker(adapters, netAdapterId, netAdapterName);
             PublicIpSwitch.IsOn = publicIpLookupOn;
             ClashSwitch.IsOn = clashEnabled;
             ClashAddressBox.Text = clashApiAddress ?? "";
             ClashSecretBox.Text = clashApiSecret ?? "";
             SetClashInputsEnabled(clashEnabled);
-            UpdateCheckSwitch.IsOn = updateCheckOn;
-            UpdateSourceCombo.SelectedIndex = updateSourceIndex == 1 ? 1 : 0;
-            UpdateSourceCombo.IsEnabled = updateCheckOn;   // the source only matters while 检查更新 is on
-            VersionText.Text = $"版本 {VersionInfo.Current}";   // AssemblyInformationalVersion — 与发版 tag 一致
+            // 版本號前綴原本是寫死的簡體「版本」，繁體/英文介面都會停在簡體；
+            // 目錄已有 settings.about.version（"版本 {0}"）帶格式化的 id，改走目錄取字。
+            VersionText.Text = string.Format(Loc.T("settings.about.version"), VersionInfo.Current);   // AssemblyInformationalVersion — 与发版 tag 一致
             _loaded = true;
         }
 
         private void PopulateItemOrder(IReadOnlyList<int> order)
         {
-            _itemOrderItems.Clear();
-            var cards = new List<object>();
-            foreach (int slot in TaskbarWindow.NormalizeItemOrder(order))
+            _populatingItemOrder = true;
+            try
             {
-                var item = new MetricOrderItem { Slot = slot, Name = ItemOrderName(slot) };
-                _itemOrderItems.Add(item);
-                var handle = new FontIcon { Icon = FluentSystemIcons.ReOrderDotsVertical_20_Regular, FontSize = 16 };
-                TouchDragScrollViewer.SetTouchDragExcluded(handle, true);
-                var card = new SettingsCard
+                var persisted = order != null
+                    ? new List<int>(order)
+                    : new List<int>(TaskbarWindow.StandardItemOrder);
+                var sequence = TaskbarWindow.NormalizeItemOrder(persisted);
+                var cards = new List<object>();
+                _itemOrderItems.Clear();
+
+                // One row per TILE (see TileOf): 使用率 and 溫度 of the same device share one taskbar
+                // cell, so they are one row here — one switch, one drag, both slots move together.
+                // `order` is the list of tiles the bar SHOWS, in bar order, so every row built from
+                // it is on; the tiles it does not name are appended below as off rows.
+                //
+                // The SAME MetricOrderItem instance must sit in _itemOrderItems and in the card's
+                // DataContext: the drag handlers resolve the dropped item by reference
+                // (_itemOrderItems.IndexOf(source)), so a second instance per card silently makes
+                // dragging a no-op.
+                foreach (int slot in sequence)
                 {
-                    Header = item.Name,
-                    HeaderIcon = handle,
-                    DataContext = item,
-                    AllowDrop = true,
-                    Cursor = Cursors.Hand,
-                };
-                card.PreviewMouseLeftButtonDown += ItemOrderCard_PreviewMouseLeftButtonDown;
-                card.PreviewMouseMove += ItemOrderCard_PreviewMouseMove;
-                card.DragEnter += ItemOrderCard_DragEnter;
-                card.DragOver += ItemOrderCard_DragOver;
-                card.Drop += ItemOrderCard_Drop;
-                cards.Add(card);
+                    int[] tile = TileOf(slot);
+                    bool known = false;
+                    foreach (var existing in _itemOrderItems)
+                        if (existing.Slots[0] == tile[0]) { known = true; break; }
+                    if (known) continue;
+
+                    var item = new MetricOrderItem { Slots = tile, Name = TileName(tile), On = true };
+                    _itemOrderItems.Add(item);
+                    cards.Add(BuildItemOrderCard(item, true));
+                }
+
+                // The stored list holds only the SWITCHED-ON tiles, so every tile that is off has no
+                // entry in it — and this page is the only place a switch lives, so walk the whole
+                // catalogue afterwards and give the remainder an off row.
+                foreach (int slot in TaskbarWindow.StandardItemOrder)
+                {
+                    int[] tile = TileOf(slot);
+                    bool known = false;
+                    foreach (var existing in _itemOrderItems)
+                        if (existing.Slots[0] == tile[0]) { known = true; break; }
+                    if (known) continue;
+
+                    var item = new MetricOrderItem { Slots = tile, Name = TileName(tile), On = false };
+                    _itemOrderItems.Add(item);
+                    cards.Add(BuildItemOrderCard(item, false));
+                }
+
+                // SettingsExpander's ItemsRepeater observes replacement, not mutations of the old list.
+                ItemOrderExpander.Items = cards;
             }
-            // SettingsExpander's ItemsRepeater observes replacement, not mutations of the old list.
-            ItemOrderExpander.Items = cards;
+            finally
+            {
+                _populatingItemOrder = false;
+            }
         }
 
-        private static string ItemOrderName(int slot)
+        /// <summary>One row of 項目順序: drag handle + name + on/off switch. The switch decides
+        /// whether the row takes a taskbar cell; the drag order applies to the switched-on rows
+        /// (a switched-off row keeps its place in the list but is invisible on the bar).</summary>
+        private SettingsCard BuildItemOrderCard(MetricOrderItem item, bool on)
         {
-            switch (slot)
+            var handle = new FontIcon { Icon = FluentSystemIcons.ReOrderDotsVertical_20_Regular, FontSize = 16 };
+            TouchDragScrollViewer.SetTouchDragExcluded(handle, true);
+
+            var toggle = new ToggleSwitch
             {
-                case 0: return "CPU";
-                case 1: return "内存";
-                case 2: return "磁盘";
-                case 3: return "GPU";
-                case 4: return "网络";
+                IsOn = on,
+                MinWidth = 0,
+                OnContent = string.Empty,
+                OffContent = string.Empty,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            toggle.Toggled += ItemOrderToggle_Toggled;
+
+            var card = new SettingsCard
+            {
+                Header = item.Name,
+                Description = null,
+                HeaderIcon = handle,
+                Content = toggle,
+                DataContext = item,   // the toggle inherits it — one instance, see PopulateItemOrder
+                AllowDrop = on,
+                Cursor = on ? Cursors.Hand : Cursors.Arrow,
+            };
+            if (!on)
+            {
+                card.Opacity = 0.65;   // still clickable (the switch), visibly not on the bar
+                return card;
+            }
+            card.PreviewMouseLeftButtonDown += ItemOrderCard_PreviewMouseLeftButtonDown;
+            card.PreviewMouseMove += ItemOrderCard_PreviewMouseMove;
+            card.DragEnter += ItemOrderCard_DragEnter;
+            card.DragOver += ItemOrderCard_DragOver;
+            card.Drop += ItemOrderCard_Drop;
+            return card;
+        }
+
+        private void ItemOrderToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            if (_populatingItemOrder) return;
+            if (!(sender is ToggleSwitch toggle)) return;
+            var card = ItemOrderCardFrom(toggle);
+            if (!(card?.DataContext is MetricOrderItem item)) return;
+
+            var order = new List<int>(CurrentItemOrder());
+            if (toggle.IsOn)
+            {
+                // A TILE comes back as a unit — 使用率 and 溫度 are one cell, so one switch.
+                foreach (int slot in item.Slots)
+                    if (!order.Contains(slot)) order.Add(slot);
+            }
+            else
+            {
+                order.RemoveAll(s => Array.IndexOf(item.Slots, s) >= 0);
+                if (order.Count == 0)
+                {
+                    // The bar must keep one tile: NormalizeItemOrder keeps an empty list as-is, which
+                    // would collapse the overlay to a zero-width window that shows nothing but still
+                    // swallows clicks. Snap the switch back instead (the guard stops the re-fire).
+                    _populatingItemOrder = true;
+                    try { toggle.IsOn = true; }
+                    finally { _populatingItemOrder = false; }
+                    return;
+                }
+            }
+            PopulateItemOrder(order);
+            ReportItemOrder();
+        }
+
+        private static string TileName(int[] tile)
+        {
+            // Ids, not literal text: these titles share their Chinese value with other entries in
+            // the catalogue (五个 id 的值都是「内存」), and the text→id reverse lookup deliberately
+            // drops values owned by more than one id. Passing text here therefore produced the
+            // simplified title in the Traditional Chinese UI.
+            switch (tile[0])
+            {
+                case 0: return "CPU";   // 使用率 + 溫度
+                case 1: return Loc.T("overlay.label.ram");
+                case 2: return Loc.T("overlay.label.disk");
+                case 3: return "GPU";   // 使用率 + 溫度
+                case 4: return Loc.T("overlay.label.net");
+                case 7: return Loc.T("menu.metric.gpu-vram");
                 default: return string.Empty;
             }
         }
 
         private int[] CurrentItemOrder()
         {
-            var order = new int[_itemOrderItems.Count];
-            for (int i = 0; i < order.Length; i++) order[i] = _itemOrderItems[i].Slot;
-            return order;
+            var order = new List<int>(TaskbarWindow.SlotCount);
+            foreach (var item in _itemOrderItems)
+            {
+                if (!item.On) continue;
+                foreach (int slot in item.Slots)
+                    if (!order.Contains(slot)) order.Add(slot);
+            }
+            return order.ToArray();
         }
 
         private void ReportItemOrder() => _itemOrderChanged?.Invoke(CurrentItemOrder());
@@ -514,14 +641,18 @@ namespace task_monitor
         private void AddDisplayCard(List<object> cards, string id, string name, string deviceName, bool primary,
             bool hasTaskbar, bool selected, bool offline)
         {
+            // 顯示器名本身是系統資料（WMI 設備名），不進目錄；只有「沒有名字」時的占位字串要在地化。
+            // 一律在建構時就取目錄譯文：ApplyOnce 在 Loaded 之後才走視覺樹，改到的是已經量測過的
+            // 物件，而且這些字全都寫進 Header/Content，晚了就趕不上第一次版面。
+            string displayName = string.IsNullOrWhiteSpace(name) ? Loc.T("settings.appearance.displays.item") : name;
             var selection = new TaskbarDisplaySelection
             {
                 Id = id,
-                Name = string.IsNullOrWhiteSpace(name) ? "显示器" : name
+                Name = displayName
             };
             var check = new CheckBox
             {
-                Content = selection.Name,
+                Content = displayName,
                 Tag = selection,
                 IsChecked = selected,
                 IsEnabled = hasTaskbar || selected,
@@ -529,12 +660,14 @@ namespace task_monitor
             };
             check.Checked += DisplayCheckChanged;
             check.Unchecked += DisplayCheckChanged;
-            string title = selection.Name;
-            if (primary) title += "（主显示器）";
-            if (offline) title += "（未连接）";
+            string title = displayName;
+            if (primary) title += Loc.T("settings.appearance.displays.primary");
+            // 「（未连接）」在目錄裡被網路適配器與顯示器的兩個 id 共用同一個簡體值，
+            // ByText 反查會判定歧義而失效——所以這裡指定 id，不靠反查。
+            if (offline) title += Loc.T("settings.appearance.displays.disconnected");
             string description = offline
-                ? "保留此选择，重新连接后自动恢复。"
-                : hasTaskbar ? deviceName : "当前没有任务栏；请在 Windows 中开启“在所有显示器上显示任务栏”。";
+                ? Loc.T("settings.appearance.displays.keep-hint")
+                : hasTaskbar ? deviceName : Loc.T("settings.appearance.displays.no-taskbar");
             cards.Add(new SettingsCard
             {
                 Header = title,
@@ -595,7 +728,9 @@ namespace task_monitor
             {
                 DiskPickCombo.Items.Add(new ComboBoxItem
                 {
-                    Content = $"磁盘 {selectedIndex}（未连接）",
+                    // 目錄已有整句模板（settings.sampling.disk.pick.disconnected），
+                    // 不在 C# 裡拼前綴——拼字串就等於把簡體「磁盘」「（未连接）」寫死。
+                    Content = string.Format(Loc.T("settings.sampling.disk.pick.disconnected"), selectedIndex),
                     Tag = selectedIndex,
                 });
                 sel = DiskPickCombo.Items.Count - 1;
@@ -624,7 +759,8 @@ namespace task_monitor
             {
                 GpuPickCombo.Items.Add(new ComboBoxItem
                 {
-                    Content = $"GPU {selectedIndex}（未连接）",
+                    // 同磁碟的處理：整句模板來自目錄，C# 只負責塞整數。
+                    Content = string.Format(Loc.T("settings.sampling.gpu.pick.disconnected"), selectedIndex),
                     Tag = selectedIndex,
                 });
                 sel = GpuPickCombo.Items.Count - 1;
@@ -641,7 +777,9 @@ namespace task_monitor
         // GPU sampling off) keeps a （未连接） placeholder, same contract as the other two.
         private void PopulateGpuTempPicker(IReadOnlyList<GpuInfo> gpus, int selectedIndex)
         {
-            GpuTempPickCombo.Items.Add(new ComboBoxItem { Content = "最高温度（默认）", Tag = -1 });
+            // 「（默认）」是簡體字面，且這個項目是預設選中項——ApplyOnce 之後才改 Content 的話，
+            // ComboBox 收合時畫的 SelectionBoxItem 仍是舊的簡體快照，使用者看到的就是沒翻的那一個。
+            GpuTempPickCombo.Items.Add(new ComboBoxItem { Content = Loc.T("settings.sampling.gpu.tempsource.max"), Tag = -1 });
             int sel = 0;
             if (gpus != null)
             {
@@ -656,7 +794,7 @@ namespace task_monitor
             {
                 GpuTempPickCombo.Items.Add(new ComboBoxItem
                 {
-                    Content = $"GPU {selectedIndex}（未连接）",
+                    Content = string.Format(Loc.T("settings.sampling.gpu.pick.disconnected"), selectedIndex),
                     Tag = selectedIndex,
                 });
                 sel = GpuTempPickCombo.Items.Count - 1;
@@ -673,7 +811,7 @@ namespace task_monitor
         private void PopulateNetAdapterPicker(IReadOnlyList<(string Id, string Label)> adapters,
             string selectedId, string selectedName)
         {
-            NetAdapterCombo.Items.Add(new ComboBoxItem { Content = "自动（默认）", Tag = "" });
+            NetAdapterCombo.Items.Add(new ComboBoxItem { Content = Loc.T("settings.sampling.net.adapter.auto"), Tag = "" });
             int sel = 0;
             if (adapters != null)
             {
@@ -688,7 +826,10 @@ namespace task_monitor
             {
                 NetAdapterCombo.Items.Add(new ComboBoxItem
                 {
-                    Content = $"{(string.IsNullOrEmpty(selectedName) ? "未知适配器" : selectedName)}（未连接）",
+                    // 後綴指定 id（理由同顯示器）；名稱本身也走目錄，未插卡/停用時讀
+                    // 「未知适配器」的對譯。
+                    Content = (string.IsNullOrEmpty(selectedName) ? Loc.T("common.unknown-adapter") : selectedName)
+                        + Loc.T("settings.sampling.net.adapter.disconnected"),
                     Tag = selectedId,
                 });
                 sel = NetAdapterCombo.Items.Count - 1;
@@ -851,21 +992,6 @@ namespace task_monitor
             _intervalChanged?.Invoke(IndexToInterval(IntervalCombo.SelectedIndex));
         }
 
-        // 检查更新 toggle: reports immediately (persisted for the NEXT startup's check)
-        // and gates the 更新源 picker (same pattern as the Clash switch).
-        private void UpdateCheckSwitch_Toggled(object sender, RoutedEventArgs e)
-        {
-            if (!_loaded) return;
-            UpdateSourceCombo.IsEnabled = UpdateCheckSwitch.IsOn;
-            _updateCheckChanged?.Invoke(UpdateCheckSwitch.IsOn);
-        }
-
-        private void UpdateSourceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (!_loaded) return;
-            _updateSourceChanged?.Invoke(UpdateSourceCombo.SelectedIndex);
-        }
-
         // One handler for all five 采样 toggles — the switch's Tag carries the overlay
         // hit slot (0=CPU 1=内存 2=磁盘 3=GPU 4=网络). The last enabled metric cannot
         // be turned off; restore it without re-firing this handler.
@@ -926,13 +1052,13 @@ namespace task_monitor
             _gpuDisplayChanged?.Invoke(2, PickedGpuIndex());
         }
 
-        // GPU → 任务栏显示 combo: 0=使用率（默认） 1=温度 2=使用率 + 温度 — 温度 replaces
-        // the utilization row, 两者 packs BOTH rows. The two temperature sub-cards below are
-        // enabled only while a temperature shows (index != 0).
+        // GPU → 任务栏显示 combo: 0=使用率（默认） 1=温度 2=使用率 + 温度 3=显存 — 温度/显存
+        // replace the utilization row, 两者 packs BOTH rows. The two temperature sub-cards
+        // below are enabled only while a TEMPERATURE shows (1 or 2), never for 显存.
         private void GpuContentCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!_loaded) return;
-            bool tempShows = GpuContentCombo.SelectedIndex != 0;
+            bool tempShows = GpuContentCombo.SelectedIndex == 1 || GpuContentCombo.SelectedIndex == 2;
             GpuTempPickCombo.IsEnabled = tempShows;
             GpuTempUnitCombo.IsEnabled = tempShows;
             _gpuTaskbarContentChanged?.Invoke(GpuContentCombo.SelectedIndex, PickedGpuTempIndex(),
@@ -944,7 +1070,7 @@ namespace task_monitor
         private void GpuTempPickCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!_loaded) return;
-            if (GpuContentCombo.SelectedIndex == 0) return;
+            if (GpuContentCombo.SelectedIndex != 1 && GpuContentCombo.SelectedIndex != 2) return;
             _gpuTaskbarContentChanged?.Invoke(GpuContentCombo.SelectedIndex, PickedGpuTempIndex(),
                 GpuTempUnitCombo.SelectedIndex == 1);
         }
@@ -954,7 +1080,7 @@ namespace task_monitor
         private void GpuTempUnitCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!_loaded) return;
-            if (GpuContentCombo.SelectedIndex == 0) return;
+            if (GpuContentCombo.SelectedIndex != 1 && GpuContentCombo.SelectedIndex != 2) return;
             _gpuTaskbarContentChanged?.Invoke(GpuContentCombo.SelectedIndex, PickedGpuTempIndex(),
                 GpuTempUnitCombo.SelectedIndex == 1);
         }
@@ -1022,7 +1148,7 @@ namespace task_monitor
             string address = ClashAddressBox.Text.Trim();
             string secret = ClashSecretBox.Text.Trim();
             ClashTestButton.IsEnabled = false;
-            ClashTestResult.Text = "测试中…";
+            ClashTestResult.Text = Loc.T("settings.sampling.net.clash.testing");
             ClashTestResult.Foreground = (Brush)FindResource("TextFillColorSecondaryBrush");
             var (ok, detail) = await Task.Run(() => ClashSampler.TestConnection(address, secret));
             ClashTestResult.Text = detail;
@@ -1031,11 +1157,25 @@ namespace task_monitor
             ClashTestButton.IsEnabled = true;
         }
 
-        private const string GitHubUrl = "https://github.com/linesoft2/TaskMonitor";
-        private const string AcknowledgementsUrl = "https://github.com/linesoft2/TaskMonitor#参考--致谢--开源许可";
+        // 关于 page links point at THIS fork's repo (user request 2026-11-18: 「關於」改成我的).
+        private const string GitHubUrl = "https://github.com/BloodMoon912/TaskMonitor";
+        private const string AcknowledgementsUrl = "https://github.com/BloodMoon912/TaskMonitor#参考--致谢--开源许可";
 
         // The nav pane's 类别 switch. Only ever flips the four pages' Visibility —
         // deliberately without the _loaded guard: it carries no change callback to
+        /// <summary>字體大小 (right-click menu → 字體大小): a LayoutTransform zoom plus a matching
+        /// window size. The shell is a fixed 1040×720 frame, so scaling only the content would
+        /// clip it — both the transform and Width/Height have to move together.</summary>
+        private void ApplyUiScale()
+        {
+            double scale = Typography.Scale;
+            if (scale <= 0 || Math.Abs(scale - 1.0) < 0.01) return;
+            if (Content is FrameworkElement root)
+                root.LayoutTransform = new System.Windows.Media.ScaleTransform(scale, scale);
+            Width = 1040 * scale;
+            Height = 720 * scale;
+        }
+
         // App, and it must also run for the selection IsSelected="True" establishes
         // in XAML (the pages' XAML defaults already match, so the early fire during
         // InitializeComponent is a no-op there — the null check only covers it firing

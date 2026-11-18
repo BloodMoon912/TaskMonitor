@@ -39,6 +39,18 @@ namespace task_monitor
             // covers the first tab's left 20px and swallows clicks (see helper).
             PivotNavButtonFix.Apply(DiskTabs);
 
+            // Tab switching has to be observable: when the user reports "clicking the second
+            // disk does nothing", this line says whether the click reached the TabControl
+            // (selection changed) or was swallowed by the pivot template's nav buttons.
+            DiskTabs.SelectionChanged += (s, e) =>
+            {
+                if (DiskTabs.SelectedItem is DiskInfo d)
+                {
+                    LastSelectedDiskIndex = d.Index;   // sticky across popup reopens
+                    Logger.Debug($"磁碟分页切换 → {d.TabTitle}（第 {DiskTabs.SelectedIndex + 1} 块）");
+                }
+            };
+
             ApplyTheme(dark);
 
             _tip.Attach(DiskHistoryChart, DiskHistoryChart.HitTest, HistoryTip, HistoryTipText, i =>
@@ -52,6 +64,10 @@ namespace task_monitor
             ProcessListTip.Attach(DiskProcessList, ProcessTip, ProcessTipDesc, ProcessTipPath);
             ProcessKillMenu.Attach(DiskProcessList);
         }
+
+        // Static (not per-instance): the popup is recreated on every open, and the user
+        // expects the disk they were looking at to still be selected next time.
+        private static int LastSelectedDiskIndex = -1;
 
         void IDetailView.Refresh(SystemSnapshot s)
         {
@@ -71,12 +87,28 @@ namespace task_monitor
 
             // Per-disk tabs: the DiskInfo objects are long-lived and update themselves via
             // INotifyPropertyChanged, so ItemsSource is only (re)set when the disk SET
-            // changes — the selected tab and its content survive every per-second tick.
+            // changes (hot-plug). The selection is preserved BY IDENTITY, not by index: a
+            // removed drive shifts every later index, and an index restore would silently
+            // jump the user to another disk (or back to the first tab) instead of keeping
+            // the one they picked.
             if (TabsNeedRebind(s.Disks))
             {
-                int sel = DiskTabs.SelectedIndex;
+                // Selection restore, in priority order:
+                //   1. the currently selected disk's INDEX (stable across the sampler's
+                //      30-tick object recreation — an identity match never survives it),
+                //   2. the tab index while the disk count is unchanged (SelectedItem can be
+                //      null for one tick around a rebind),
+                //   3. the disk this user looked at last in a previous popup,
+                //   4. the first disk.
+                int keepIndex = DiskTabs.SelectedItem is DiskInfo keep ? keep.Index : -1;
+                if (keepIndex < 0 && DiskTabs.SelectedIndex >= 0 && DiskTabs.SelectedIndex < s.Disks.Count)
+                    keepIndex = s.Disks[DiskTabs.SelectedIndex].Index;
+                if (keepIndex < 0) keepIndex = LastSelectedDiskIndex;
+
                 DiskTabs.ItemsSource = s.Disks;
-                DiskTabs.SelectedIndex = sel >= 0 && sel < s.Disks.Count ? sel : 0;
+                int idx = s.Disks.FindIndex(d => d.Index == keepIndex);
+                DiskTabs.SelectedIndex = idx >= 0 ? idx : 0;
+                Logger.Debug($"磁碟分页重绑：{s.Disks.Count} 块，保留选中={(idx >= 0 ? s.Disks[idx].TabTitle : "无（回第一块）")}");
             }
 
             // Per-process list: resolve each row's icon (cache-backed) and bind.

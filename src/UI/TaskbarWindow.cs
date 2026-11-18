@@ -26,7 +26,7 @@ namespace task_monitor
     /// ORTHOGONAL to the family is the taskbar's ORIENTATION: a side-docked (vertical)
     /// taskbar — the classical one since Win10, and on Win11 26H2 the native 左侧/右侧
     /// 任务栏位置 — transposes both families' overlay into a COLUMN GRID whose column count
-    /// follows the bar's thickness (see the STRIP_H block below).
+    /// follows the bar's thickness (see the StripH block below).
     ///
     /// Runs on whatever thread calls <see cref="Start"/> — TaskbarOverlayManager gives each
     /// selected display its own STA/message loop and RenderState, all fed by one SamplingController.
@@ -50,20 +50,54 @@ namespace task_monitor
             _sampling = sampling ?? throw new ArgumentNullException(nameof(sampling));
         }
 
-        // The overlay is a fixed-width-cell grid of up to four two-row groups. Hit slots stay
-        // stable (0=CPU 1=内存 2=磁盘 3=GPU 4=网络); their VISUAL order is _itemOrder, shared
-        // by the taskbar and floating forms. 网络 and GPU 两者 each own a whole two-row cell;
-        // every other metric occupies one row. A sampling-disabled metric leaves no hole, and
-        // empty groups shrink away. A two-row item that would start on a horizontal cell's
-        // bottom row moves to the next cell, leaving an intentional alignment hole.
-        // ComputeLayout derives drawing, hit-testing and popup anchors from the same geometry.
+        // The overlay is a fixed-width-cell grid of up to four two-row groups. A visible ITEM is
+        // one row; its VISUAL order is _itemOrder, shared by the taskbar and floating forms.
+        // 网络 owns a whole two-row cell; every other item occupies one row. A sampling-disabled
+        // item leaves no hole, and empty groups shrink away. A two-row item that would start on
+        // a horizontal cell's bottom row moves to the next cell, leaving an intentional
+        // alignment hole. ComputeLayout derives drawing, hit-testing and popup anchors from the
+        // same geometry.
         private const float ITEM_GAP = 0f;                 // groups sit flush against each other
-        private static readonly float[] GroupWidths = { 70f, 70f, 70f, 84f }; // stacked cell ×3, 网络 (DIPs at 96 DPI)
-        private const int GroupCount = 4;                  // up to four two-row cells
-        private const int SlotCount = 5;                   // hit slots: CPU/内存/磁盘/GPU/网络
-        private const int PackedPositionCount = 8;         // five items + GPU's second row + alignment holes
-        private static readonly int[] StandardItemOrder = { 0, 1, 2, 3, 4 };
+        // FLOOR widths only (DIPs at 96 DPI) — a measured column never goes below these, so a
+        // row whose value is "--" (no sensor yet) or whose label is a single glyph cannot make
+        // the strip collapse. The real width is measured from the drawn text (see ColumnWidth).
+        private static readonly float[] GroupWidths = { 76f, 76f, 76f, 90f, 76f }; // stacked cell ×3, 网络
+        private const int GroupCount = 5;                  // up to five two-row cells
+        // 8 ITEM slots (0..7) — 0=CPU使用率 1=内存 2=磁盘 3=GPU使用率 4=网络 5=CPU温度
+        // 6=GPU温度 7=GPU显存 — each ONE row on the taskbar and each independently orderable.
+        // A "slot" is the unit the user orders and the draw pass paints; a "detail column" is
+        // the popup page a click opens (DetailWindow's five pages) — the two only coincide
+        // for slots 0..4 (DetailColumn maps the rest).
+        internal const int SlotCount = 8;
+        private const int DetailColumnCount = 5;           // CPU/内存/磁盘/GPU/网络 detail pages
+        private const int PackedPositionCount = 10;         // 4 two-row cells' worth of rows: 7 items + 网络's second row, or holes
+        // The DEFAULT tile order (外观 → 项目顺序 → 恢复默认). One entry per TILE's first slot:
+        // CPU(0, 使用率+溫度), 内存(1), 磁盘(2), GPU(3, 使用率+溫度), 显存(7), 网络(4) — listed in
+        // the order PairWithAnchors produces, so the settings page and the taskbar agree, and
+        // 显存 is part of the default set (a 恢复默认 that dropped it made the row vanish;
+        // user report 2026-11-18). 5/6 are still never listed: they are the second row of tiles
+        // 0/3 and always ride along with their anchor.
+        internal static readonly int[] StandardItemOrder = { 0, 1, 2, 3, 7, 4 };
 
+        // A slot's SAMPLING mask bit (SystemSampler.Mask*): the temperature and 显存 rows ride
+        // on their metric's own switch — there is no separate CPU-温度/GPU-温度 sampling toggle.
+        private static int SampleBit(int slot)
+            => slot == 0 || slot == 5 ? 0
+                : slot == 1 ? 1
+                : slot == 2 ? 2
+                : slot == 3 || slot == 6 || slot == 7 ? 3
+                : 4;
+
+        // The DetailWindow page a slot's click opens: 温度/显存 belong to their metric's page.
+        // Same values as SampleBit — deliberately, since a row shows exactly what its metric's
+        // page shows — but a different question, so it keeps its own name and its own callers.
+        internal static int DetailColumn(int slot)
+            => slot >= 0 && slot < DetailColumnCount ? slot : SampleBit(slot);
+
+        // Drop duplicates and out-of-range entries, then keep the rest VERBATIM: the list is the
+        // user's choice of which tiles the bar shows (a switched-off tile is simply absent), so
+        // nothing may be appended here. Re-adding a missing default would silently switch a metric
+        // back on — that is how 显存 kept reappearing after 恢复默认 (user report 2026-11-18).
         internal static int[] NormalizeItemOrder(IEnumerable<int> order)
         {
             var result = new List<int>(SlotCount);
@@ -77,16 +111,22 @@ namespace task_monitor
                     result.Add(slot);
                 }
             }
-            for (int slot = 0; slot < SlotCount; slot++)
-                if (!seen[slot]) result.Add(slot);
             return result.ToArray();
         }
 
+        // "Default" = StandardItemOrder, in order — the state PERSISTED as null
+        // (App.OnItemOrderChanged). The order the settings page reports carries each tile's
+        // SECOND row (5/6) right after its anchor, so those are dropped before comparing;
+        // 恢复默认 must round-trip back to null, not to an explicit copy of the default.
         internal static bool IsDefaultItemOrder(IReadOnlyList<int> order)
         {
-            if (order == null || order.Count != SlotCount) return order == null;
-            for (int slot = 0; slot < SlotCount; slot++)
-                if (order[slot] != slot) return false;
+            if (order == null) return true;
+            var tiles = new List<int>(order.Count);
+            foreach (int slot in order)
+                if (slot != 5 && slot != 6) tiles.Add(slot);
+            if (tiles.Count != StandardItemOrder.Length) return false;
+            for (int i = 0; i < StandardItemOrder.Length; i++)
+                if (tiles[i] != StandardItemOrder[i]) return false;
             return true;
         }
 
@@ -107,7 +147,7 @@ namespace task_monitor
         //
         // The narrow form's block is STRIP_BLOCK_H tall = 2 lines + the gap between them +
         // STRIP_BLOCK_PAD above and below. The padding is NOT optional: at the first, tight
-        // version (2×STRIP_H = 32 DIP, no padding) the label and its value read as one
+        // version (2×StripH = 32 DIP, no padding) the label and its value read as one
         // collided lump and the hairline between blocks looked like it belonged to neither
         // (the 2026-09-30 布局不合理 report); 48 DIP was the roomy answer, 44 the "稍微紧凑一点"
         // follow-up — the block height is the one knob, everything inside it is derived
@@ -119,9 +159,25 @@ namespace task_monitor
         // (~17 DIP) has no breathing space above/below (the 2026-10-17 "多列时边距不用这么
         // 紧凑，单列才紧凑" follow-up). So a grid row is 24 DIP — 1.5× the strip line, the
         // vertical room the width-adaptive form gets for free.
-        private const float STRIP_H = 16f;                 // ONE-LINE single-column strip (compact form; DIPs at 96 DPI)
+        // 字體大小 (设置 → 外观 / right-click menu): every geometry value below is the 13 px
+        // measurement, and the overlay's whole grid is derived from it — so scaling the type
+        // without scaling these would collide the label with its value. `_layoutScale`
+        // multiplies them all together (see LayoutScale), and the accessors below are the ONE
+        // place the multiplication happens for pitch values.
+        //
+        // The ceiling is 1.15 on purpose: a two-line block is 2×line(17.29) + gap(1) + 2×pad(4)
+        // = 43.6 DIP inside a ~48 DIP taskbar band, so beyond ~1.15 the band physically cannot
+        // hold the pair — text would be clipped, not merely tighter. The floating widget has
+        // the same cap because the overlay is drawn by the same code path.
+        private static volatile float _layoutScale = 1f;
+        internal const float MaxLayoutScale = 1.15f;
+        internal const float MinLayoutScale = 0.85f;
+
+        private static float S(float dip) => dip * _layoutScale;
+
+        private static float StripH => S(16f);                 // ONE-LINE single-column strip (compact form; DIPs at 96 DPI)
         private const float GRID_ROW_H = 24f;              // one MULTI-COLUMN grid row (roomy form)
-        private const float STRIP_TWO_LINE_MIN_W = 72f;    // one-line pairs need this much; a 70-DIP cell (stacked only) already fits
+        private static float StripTwoLineMinW => S(72f);    // one-line pairs need this much; a 70-DIP cell (stacked only) already fits
         private const float STRIP_BLOCK_H = 44f;           // one two-line metric BLOCK (DIPs at 96 DPI)
         private const float STRIP_BLOCK_PAD = 4f;          // …of which this much sits above and below the pair
         private const float STRIP_LINE_GAP = 1f;           // …and this much between a label and its value
@@ -143,42 +199,143 @@ namespace task_monitor
         // line box without grazing the row boundaries, which is the "仍保持美观" half of
         // the ask; the two-line block keeps ≥1 DIP of derived line slack at 40. The
         // one-line strip's own 16-DIP pitch is ALREADY the compact form — untouched.
-        private static readonly float[] CompactGroupWidths = { 65f, 65f, 65f, 78f };
-        private static float GroupW(int g, bool compact) => (compact ? CompactGroupWidths : GroupWidths)[g];
-        private static float GridRowH(bool compact) => compact ? 18f : GRID_ROW_H;
-        private static float StripBlockH(bool compact) => compact ? 40f : STRIP_BLOCK_H;
-        private static float StripBlockPad(bool compact) => compact ? 2f : STRIP_BLOCK_PAD;
-        private static float RowInset(bool compact) => compact ? 3f : 5f;
+        private static readonly float[] CompactGroupWidths = { 70f, 70f, 70f, 82f, 70f };
+        private static float GroupW(int g, bool compact) => S((compact ? CompactGroupWidths : GroupWidths)[g]);
 
-        // The MULTI-row strip blocks' heights (任务栏显示 两者's three-line GPU block,
-        // 网络's four-line ↑/↓ block). BOTH modes shrink them to the block's own content +
-        // the mode's regular pads, so every block keeps the same outer rhythm (4+4 DIP
+        // ---------------------------------------------------------------
+        // A COLUMN IS AS WIDE AS ITS TEXT NEEDS — measured, not hand-tuned (the
+        // 「排列方式非常之不好」 report, and LiteMonitor does exactly this: its
+        // HorizontalLayout.Build sets col.ColumnWidth = Max(widthTop, widthBottom) from
+        // TextRenderer.MeasureText). A fixed 76-DIP cell is right for one language at one font
+        // scale; 記憶體/顯示記憶體/VRAM want different room, and so do 100% / 100°C / 999.9 MB/s.
+        // We measure with DWrite — the very IDWriteTextFormats that draw — and reserve the
+        // WIDEST value a row can ever show instead of the live one: the overlay is embedded in
+        // the taskbar band, so a width that followed 9% → 10% would resize and re-embed the
+        // window every second.
+        // Taskbar thread only (the formats and factory are per-HWND, §46). Static because the
+        // layout maths and the draw pass both read them and they depend only on the global font
+        // scale and the UI language.
+        private static readonly float[] _slotNeed = new float[SlotCount];
+        private static readonly Dictionary<string, float> _labelWidths = new Dictionary<string, float>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, float> _valueWidths = new Dictionary<string, float>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, float> _netWidths = new Dictionary<string, float>(StringComparer.Ordinal);
+        private static int _slotNeedGen;                // bumped whenever the text formats change
+        private static int _slotNeedMeasuredGen = -1;   // the generation _slotNeed was filled at
+        private const float LABEL_VALUE_GAP = 6f;       // minimum air between a label and its value
+        private const float MaxColumnDip = 150f;        // a custom name may not eat the taskbar
+
+        // The widest value a slot can ever show: the width reserve, never the live reading.
+        private static string SlotReserveText(int slot)
+        {
+            switch (slot)
+            {
+                case 4: return "999.9 MB/s";
+                case 5:
+                case 6: return "212°F";   // wider than 100°C, and °F is a setting
+                default: return "100%";
+            }
+        }
+
+        private static void InvalidateColumnMetrics()
+        {
+            _slotNeedGen++;
+            _slotNeedMeasuredGen = -1;
+            _labelWidths.Clear();
+            _valueWidths.Clear();
+            _netWidths.Clear();
+            for (int slot = 0; slot < SlotCount; slot++) _slotNeed[slot] = 0f;
+        }
+
+        private static float MeasureText(RenderState s, Dictionary<string, float> cache,
+            IComObject<IDWriteTextFormat> format, string text)
+        {
+            if (string.IsNullOrEmpty(text) || format == null) return 0f;
+            float w;
+            if (cache.TryGetValue(text, out w)) return w;
+            try
+            {
+                using (var layout = s.DWriteFactory.CreateTextLayout(format, text, text.Length, 4096f, 64f))
+                {
+                    layout.Object.GetMetrics(out DWRITE_TEXT_METRICS m);
+                    w = m.width;
+                }
+            }
+            catch (Exception)
+            {
+                // A measurement failure must never take the overlay down — estimate and draw on.
+                w = text.Length * 8f;
+            }
+            cache[text] = w;
+            return w;
+        }
+
+        // Fill _slotNeed for the current formats — at most once per font-scale change (the text
+        // cache is keyed by the string, the generation by the formats).
+        private static void MeasureColumnNeeds(RenderState s)
+        {
+            if (_slotNeedMeasuredGen == _slotNeedGen) return;
+            if (s.LabelFormat == null || s.ValueFormat == null || s.NetFormat == null) return;
+            bool compact = s.Owner != null && s.Owner._compactLayout;
+            float pad = RowInset(compact);
+            for (int slot = 0; slot < SlotCount; slot++)
+            {
+                bool net = slot == 4;
+                _slotNeed[slot] = pad * 2f
+                    + MeasureText(s, _labelWidths, s.LabelFormat, SlotLabelText(slot))
+                    + LABEL_VALUE_GAP
+                    + MeasureText(s, net ? _netWidths : _valueWidths, net ? s.NetFormat : s.ValueFormat,
+                        SlotReserveText(slot));
+            }
+            _slotNeedMeasuredGen = _slotNeedGen;
+            // The window size derives from these numbers, so the tick resizes once the draw that
+            // filled them has returned (never from inside the draw — the target is in use).
+            s.ColumnNeedsDirty = true;
+        }
+
+        // One column's width: the WIDER of its two rows (LiteMonitor's rule), floored by the
+        // hand-tuned minimum so a "--" row cannot shrink the strip, capped so a long custom name
+        // cannot eat the taskbar. Until the first measurement the floor IS the width, so a
+        // startup frame looks exactly like the old fixed grid.
+        private static float ColumnWidth(int top, int bottom, bool compact)
+        {
+            float need = 0f;
+            if (top >= 0 && top < SlotCount) need = _slotNeed[top];
+            if (bottom >= 0 && bottom < SlotCount && _slotNeed[bottom] > need) need = _slotNeed[bottom];
+            float floor = S((compact ? CompactGroupWidths : GroupWidths)[top == 4 || bottom == 4 ? 3 : 0]);
+            if (need < floor) need = floor;
+            float cap = S(MaxColumnDip);
+            return need > cap ? cap : need;
+        }
+        private static float GridRowH(bool compact) => S(compact ? 18f : GRID_ROW_H);
+        private static float StripBlockH(bool compact) => S(compact ? 40f : STRIP_BLOCK_H);
+        private static float StripBlockPad(bool compact) => S(compact ? 2f : STRIP_BLOCK_PAD);
+        private static float RowInset(bool compact) => S(compact ? 3f : 5f);
+
+        // 网络's four-line strip block height. BOTH modes shrink it to the block's own content
+        // + the mode's regular pads, so every block keeps the same outer rhythm (4+4 DIP
         // between blocks by default, 2+2 in 紧凑模式). The default originally spanned two
-        // regular blocks (88) and spread the leftover BETWEEN its lines — the GPU block's
-        // internal gaps (~10 DIP) ended up LARGER than the 8-DIP block gaps, breaking the
-        // "tighter inside than outside" grouping (the 2026-10-19 "非紧凑模式下 GPU、网络
-        // 那里间距大了" report); every other form (horizontal cells, the multi-column
-        // grid, the one-line strip) gives these rows no extra separation at all.
-        // Derivations: default = the strip's regular 17.5-DIP pitch — GPU 4 + 3×17.5+2×1
-        // + 4 = 62.5, 网络 4 + 4×17.5+3×1 + 4 = 81 (the span-derived bands then land
-        // exactly ON that pitch); compact = the natural bands below — GPU 15+1+17.5+1+17.5
-        // + 2×2 = 56, 网络 2×(15+1+17.5)+1 + 2×2 = 72.
-        private static float GpuBothStripBlockH(bool compact) => compact ? 56f : 62.5f;
-        private static float NetStripBlockH(bool compact) => compact ? 72f : 81f;
+        // regular blocks (88) and spread the leftover BETWEEN its lines — its internal gaps
+        // (~10 DIP) ended up LARGER than the 8-DIP block gaps, breaking the "tighter inside
+        // than outside" grouping (the 2026-10-19 "非紧凑模式下 GPU、网络那里间距大了" report);
+        // every other form (horizontal cells, the multi-column grid, the one-line strip) gives
+        // these rows no extra separation at all. Derivations: default = the strip's regular
+        // 17.5-DIP pitch — 网络 4 + 4×17.5+3×1 + 4 = 81 (the span-derived bands then land
+        // exactly ON that pitch); compact = the natural bands below — 网络
+        // 2×(15+1+17.5)+1 + 2×2 = 72.
+        private static float NetStripBlockH(bool compact) => S(compact ? 72f : 81f);
 
         // 紧凑模式's inside-block line bands: the NATURAL line heights of the strip pair
-        // (FormattedText, 2026-10-17: 11px ≈ 14.63, 13px ≈ 17.29). 紧凑模式's multi-row
-        // blocks stack these as ONE tight cluster (~1-DIP row gaps) in a block shrunk to
-        // fit them (GpuBothStripBlockH/NetStripBlockH); the DEFAULT's multi-row blocks
-        // span-derive their bands, which their regular-pitch sizing lands exactly on
-        // 17.5 — either way the block keeps the mode's regular pads and no leftover is
-        // spread between the rows or parked at the edges (the 2026-10-17/2026-10-19
-        // follow-ups). A band below the text box is harmless (PARAGRAPH_CENTER text just
-        // centres on it); these stay a hair above it. The plain two-line blocks
-        // (CPU/内存/磁盘, 温度-only) keep the span-derived pair — their label sits 2.5 DIP
-        // off its value already.
-        private const float STRIP_LABEL_BAND_H = 15f;   // the 11px label line's box ≈ 14.63
-        private const float STRIP_VALUE_BAND_H = 17.5f; // the 13px value line's box ≈ 17.29
+        // (FormattedText, 2026-10-17: 11px ≈ 14.63, 13px ≈ 17.29). 紧凑模式's multi-row block
+        // stacks these as ONE tight cluster (~1-DIP row gaps) in a block shrunk to fit them
+        // (NetStripBlockH); the DEFAULT's multi-row block span-derives its bands, which its
+        // regular-pitch sizing lands exactly on 17.5 — either way the block keeps the mode's
+        // regular pads and no leftover is spread between the rows or parked at the edges (the
+        // 2026-10-17/2026-10-19 follow-ups). A band below the text box is harmless
+        // (PARAGRAPH_CENTER text just centres on it); these stay a hair above it. The plain
+        // two-line blocks (every single-row metric) keep the span-derived pair — their label
+        // sits 2.5 DIP off its value already.
+        private static float StripLabelBandH => S(15f);   // the 11px label line's box ≈ 14.63
+        private static float StripValueBandH => S(17.5f); // the 13px value line's box ≈ 17.29
 
         // The geometry of one visibility mask. Flat fields (no arrays) — computed per
         // Draw/HitTest call, incl. per mouse-move, so it must not allocate.
@@ -188,33 +345,34 @@ namespace task_monitor
             public bool TwoLine;
             public float Width;
             public float Height;
-            public float Left0, Left1, Left2, Left3;
-            // Every item occupies one row, except 网络 and GPU 两者, whose two positions stay
-            // together. Empty positions are cell-alignment holes or the final odd row.
-            public int Pos0, Pos1, Pos2, Pos3, Pos4, Pos5, Pos6, Pos7;
-            public int TempPos;
+            public float Left0, Left1, Left2, Left3, Left4;
+            // Every item occupies one row, except 网络, whose two positions stay together.
+            // Empty positions are cell-alignment holes or the final odd row.
+            public int Pos0, Pos1, Pos2, Pos3, Pos4, Pos5, Pos6, Pos7, Pos8, Pos9;
             public int NetPos;
             public int SlotMask;
-            public GpuTaskbarContent GpuContent;
             public bool Compact;
 
             public int Columns;
             public float RowH;
-            public int ColRows0, ColRows1, ColRows2, ColRows3;
-            public int PosCol0, PosCol1, PosCol2, PosCol3, PosCol4, PosCol5, PosCol6, PosCol7;
-            public int PosRow0, PosRow1, PosRow2, PosRow3, PosRow4, PosRow5, PosRow6, PosRow7;
+            public int ColRows0, ColRows1, ColRows2, ColRows3, ColRows4;
+            public int PosCol0, PosCol1, PosCol2, PosCol3, PosCol4, PosCol5, PosCol6, PosCol7, PosCol8, PosCol9;
+            public int PosRow0, PosRow1, PosRow2, PosRow3, PosRow4, PosRow5, PosRow6, PosRow7, PosRow8, PosRow9;
             public int NetCol, NetRow;
 
             public bool GroupVisible(int g) => GroupLeft(g) >= 0f;
-            public float GroupLeft(int g) => g == 0 ? Left0 : g == 1 ? Left1 : g == 2 ? Left2 : Left3;
-            public float GroupW(int g) => TaskbarWindow.GroupW(NetPos >= 0 && NetPos / 2 == g ? 3 : 0, Compact);
-            public bool SlotVisible(int slot) => (SlotMask & (1 << slot)) != 0;
-            public int SlotAt(int pos) => pos == 0 ? Pos0 : pos == 1 ? Pos1 : pos == 2 ? Pos2 : pos == 3 ? Pos3 : pos == 4 ? Pos4 : pos == 5 ? Pos5 : pos == 6 ? Pos6 : Pos7;
-            public int PositionOf(int slot) => Pos0 == slot ? 0 : Pos1 == slot ? 1 : Pos2 == slot ? 2 : Pos3 == slot ? 3 : Pos4 == slot ? 4 : Pos5 == slot ? 5 : Pos6 == slot ? 6 : Pos7 == slot ? 7 : -1;
+            public float GroupLeft(int g) => g == 0 ? Left0 : g == 1 ? Left1 : g == 2 ? Left2 : g == 3 ? Left3 : Left4;
+            // A column's width comes from the rows it actually holds — the WIDER of the two
+            // (ColumnWidth measures the drawn text; the old form picked a constant by column
+            // index, which is why 網路's column had a different fixed width from the rest).
+            public float GroupW(int g) => TaskbarWindow.ColumnWidth(SlotAt(g * 2), SlotAt(g * 2 + 1), Compact);
+            public bool SlotVisible(int slot) => (SlotMask & (1 << SampleBit(slot))) != 0;
+            public int SlotAt(int pos) => pos == 0 ? Pos0 : pos == 1 ? Pos1 : pos == 2 ? Pos2 : pos == 3 ? Pos3 : pos == 4 ? Pos4 : pos == 5 ? Pos5 : pos == 6 ? Pos6 : pos == 7 ? Pos7 : pos == 8 ? Pos8 : Pos9;
+            public int PositionOf(int slot) => Pos0 == slot ? 0 : Pos1 == slot ? 1 : Pos2 == slot ? 2 : Pos3 == slot ? 3 : Pos4 == slot ? 4 : Pos5 == slot ? 5 : Pos6 == slot ? 6 : Pos7 == slot ? 7 : Pos8 == slot ? 8 : Pos9 == slot ? 9 : -1;
             public bool NetVisible => NetPos >= 0;
-            public int PosCol(int pos) => pos == 0 ? PosCol0 : pos == 1 ? PosCol1 : pos == 2 ? PosCol2 : pos == 3 ? PosCol3 : pos == 4 ? PosCol4 : pos == 5 ? PosCol5 : pos == 6 ? PosCol6 : PosCol7;
-            public int PosRow(int pos) => pos == 0 ? PosRow0 : pos == 1 ? PosRow1 : pos == 2 ? PosRow2 : pos == 3 ? PosRow3 : pos == 4 ? PosRow4 : pos == 5 ? PosRow5 : pos == 6 ? PosRow6 : PosRow7;
-            public int ColRows(int c) => c == 0 ? ColRows0 : c == 1 ? ColRows1 : c == 2 ? ColRows2 : ColRows3;
+            public int PosCol(int pos) => pos == 0 ? PosCol0 : pos == 1 ? PosCol1 : pos == 2 ? PosCol2 : pos == 3 ? PosCol3 : pos == 4 ? PosCol4 : pos == 5 ? PosCol5 : pos == 6 ? PosCol6 : pos == 7 ? PosCol7 : pos == 8 ? PosCol8 : PosCol9;
+            public int PosRow(int pos) => pos == 0 ? PosRow0 : pos == 1 ? PosRow1 : pos == 2 ? PosRow2 : pos == 3 ? PosRow3 : pos == 4 ? PosRow4 : pos == 5 ? PosRow5 : pos == 6 ? PosRow6 : pos == 7 ? PosRow7 : pos == 8 ? PosRow8 : PosRow9;
+            public int ColRows(int c) => c == 0 ? ColRows0 : c == 1 ? ColRows1 : c == 2 ? ColRows2 : c == 3 ? ColRows3 : ColRows4;
             public float ColumnLeft(int c)
             {
                 float x = 0f;
@@ -233,29 +391,30 @@ namespace task_monitor
                 else if (pos == 4) { PosCol4 = col; PosRow4 = row; }
                 else if (pos == 5) { PosCol5 = col; PosRow5 = row; }
                 else if (pos == 6) { PosCol6 = col; PosRow6 = row; }
-                else { PosCol7 = col; PosRow7 = row; }
+                else if (pos == 7) { PosCol7 = col; PosRow7 = row; }
+                else if (pos == 8) { PosCol8 = col; PosRow8 = row; }
+                else { PosCol9 = col; PosRow9 = row; }
             }
             public void AddColRows(int col, int rows)
             {
                 if (col == 0) ColRows0 += rows;
                 else if (col == 1) ColRows1 += rows;
                 else if (col == 2) ColRows2 += rows;
-                else ColRows3 += rows;
+                else if (col == 3) ColRows3 += rows;
+                else ColRows4 += rows;
             }
         }
 
-        // The two-line strip's PER-ITEM heights: a regular block is StripBlockH, but the
-        // multi-row items have their own (GpuBothStripBlockH/NetStripBlockH) — 紧凑模式
-        // shrinks them to the natural line stack — so a position's top is the CUMULATIVE
-        // sum of the items before it, never pos × RowH. 两者's temperature position is a
-        // zero-height marker at its block's bottom (the FIRST GPU position owns the whole
-        // block's rect; drawing, hit-testing and the popup anchors all reach it there).
+        // The two-line strip's PER-ITEM heights: a regular block is StripBlockH, but 网络 has
+        // its own (NetStripBlockH) — 紧凑模式 shrinks it to the natural line stack — so a
+        // position's top is the CUMULATIVE sum of the items before it, never pos × RowH.
+        // 网络's second position is a zero-height marker at its block's bottom (the FIRST
+        // 网络 position owns the whole block's rect; drawing, hit-testing and the popup
+        // anchors all reach it there).
         private static float StripPosH(OverlayLayout l, int pos)
         {
             if (l.SlotAt(pos) == 4)
                 return pos == l.NetPos + 1 ? 0f : NetStripBlockH(l.Compact);
-            if (l.GpuContent == GpuTaskbarContent.Both && l.SlotAt(pos) == 3)
-                return pos == l.TempPos ? 0f : GpuBothStripBlockH(l.Compact);
             return StripBlockH(l.Compact);
         }
 
@@ -273,7 +432,7 @@ namespace task_monitor
             if (!VerticalPosRect(l, l.PositionOf(slot), out left, out top, out right, out bottom))
                 return false;
             // Two-line strips already give the FIRST position the whole block's height.
-            if (!l.TwoLine && (slot == 4 || (slot == 3 && l.GpuContent == GpuTaskbarContent.Both)))
+            if (!l.TwoLine && slot == 4)
                 bottom += l.RowH;
             return true;
         }
@@ -299,16 +458,21 @@ namespace task_monitor
             return true;
         }
 
-        // Derive all geometry from the sampling mask (bit per slot, SystemSampler.Mask*),
-        // the GPU 任务栏显示 content (slot 3 packs one or two rows) and 紧凑模式 (the item
-        // pitch — cell widths, row heights, insets). HORIZONTAL: fixed 70/84-DIP cells
-        // (compact 65/78), the width follows. VERTICAL: the available THICKNESS decides the
-        // form and the column count, so the window's size and the layout are mutually
+        // Derive all geometry from the sampling mask (bit per METRIC, SystemSampler.Mask* —
+        // SampleBit maps a slot onto its metric), the visual order (itemOrder, up to the 8
+        // slots; 网络 is the only two-row item) and 紧凑模式 (the item pitch — row heights,
+        // insets, and the column width FLOOR). HORIZONTAL: each column is as wide as the measured
+        // text of its two rows needs (ColumnWidth), falling back to the floor constants until the
+        // first measurement lands, and the total width follows. VERTICAL: the available THICKNESS
+        // decides the form and the column count, so the window's size and the layout are mutually
         // dependent — ComputeTargetSize is the one caller that has to solve that circularity
         // (band clamp first, layout second); pass 0 for "not measured yet" → natural width.
-        private static OverlayLayout ComputeLayout(int mask, GpuTaskbarContent gpuContent, bool vertical, float availableWidthDip, bool compact, int[] itemOrder)
+        private static OverlayLayout ComputeLayout(int mask, bool vertical, float availableWidthDip, bool compact, int[] itemOrder)
         {
-            if (itemOrder == null || itemOrder.Length != SlotCount) itemOrder = StandardItemOrder;
+            // A normalized order is between 5 and SlotCount long (the extras are opt-in), so
+            // the length alone is not a validity test — a longer one can only be foreign.
+            if (itemOrder == null || itemOrder.Length == 0 || itemOrder.Length > SlotCount)
+                itemOrder = StandardItemOrder;
             var l = new OverlayLayout
             {
                 Left0 = -1f, Left1 = -1f, Left2 = -1f, Left3 = -1f,
@@ -316,10 +480,8 @@ namespace task_monitor
                 PosCol0 = -1, PosCol1 = -1, PosCol2 = -1, PosCol3 = -1, PosCol4 = -1, PosCol5 = -1, PosCol6 = -1, PosCol7 = -1,
                 PosRow0 = -1, PosRow1 = -1, PosRow2 = -1, PosRow3 = -1, PosRow4 = -1, PosRow5 = -1, PosRow6 = -1, PosRow7 = -1,
                 NetCol = -1,
-                TempPos = -1,
                 NetPos = -1,
                 SlotMask = mask,
-                GpuContent = gpuContent,
                 Compact = compact,
             };
             void SetPos(int position, int slot)
@@ -327,14 +489,16 @@ namespace task_monitor
                 if (position == 0) l.Pos0 = slot; else if (position == 1) l.Pos1 = slot;
                 else if (position == 2) l.Pos2 = slot; else if (position == 3) l.Pos3 = slot;
                 else if (position == 4) l.Pos4 = slot; else if (position == 5) l.Pos5 = slot;
-                else if (position == 6) l.Pos6 = slot; else l.Pos7 = slot;
+                else if (position == 6) l.Pos6 = slot; else if (position == 7) l.Pos7 = slot; else if (position == 8) l.Pos8 = slot; else l.Pos9 = slot;
             }
             int pos = 0;
-            for (int i = 0; i < SlotCount; i++)
+            for (int i = 0; i < itemOrder.Length; i++)
             {
                 int slot = itemOrder[i];
-                if ((mask & (1 << slot)) == 0) continue;
-                int rows = slot == 4 || (slot == 3 && gpuContent == GpuTaskbarContent.Both) ? 2 : 1;
+                // A slot's visibility is its METRIC's sampling bit (SampleBit): 5 rides on
+                // CPU, 6/7 on GPU, so a temperature/显存 row disappears with its metric.
+                if ((mask & (1 << SampleBit(slot))) == 0) continue;
+                int rows = slot == 4 ? 2 : 1;
                 // A horizontal two-row item owns its whole cell and starts on its top row.
                 if (rows == 2 && !vertical && (pos & 1) == 1) pos++;
                 if (pos + rows > PackedPositionCount) break;
@@ -343,11 +507,6 @@ namespace task_monitor
                     l.NetPos = pos;
                     SetPos(pos++, slot);
                     SetPos(pos++, slot);
-                }
-                else if (slot == 3)
-                {
-                    if (gpuContent != GpuTaskbarContent.Temperature) SetPos(pos++, slot);
-                    if (gpuContent != GpuTaskbarContent.Usage) { SetPos(pos, slot); l.TempPos = pos; pos++; }
                 }
                 else SetPos(pos++, slot);
             }
@@ -358,7 +517,7 @@ namespace task_monitor
             {
                 if (g > 0) x += ITEM_GAP;
                 float left = x;
-                if (g == 0) l.Left0 = left; else if (g == 1) l.Left1 = left; else if (g == 2) l.Left2 = left; else l.Left3 = left;
+                if (g == 0) l.Left0 = left; else if (g == 1) l.Left1 = left; else if (g == 2) l.Left2 = left; else if (g == 3) l.Left3 = left; else l.Left4 = left;
                 x += l.GroupW(g);
             }
             l.Width = x;
@@ -382,8 +541,8 @@ namespace task_monitor
             {
                 l.Columns = 1;
                 l.Width = Math.Min(natural, avail);
-                l.TwoLine = l.Width < Math.Min(STRIP_TWO_LINE_MIN_W, natural);
-                l.RowH = l.TwoLine ? StripBlockH(l.Compact) : STRIP_H;
+                l.TwoLine = l.Width < Math.Min(StripTwoLineMinW, natural);
+                l.RowH = l.TwoLine ? StripBlockH(l.Compact) : StripH;
                 l.ColRows0 = packed;
                 for (int p = 0; p < packed; p++) l.SetPosCell(p, 0, p);
                 if (net) { l.NetCol = 0; l.NetRow = l.NetPos; }
@@ -391,16 +550,15 @@ namespace task_monitor
                 return l;
             }
 
-            // Fill each column up to the even share without splitting either two-row item.
+            // Fill each column up to the even share without splitting the two-row item.
             l.RowH = GridRowH(l.Compact);
             int target = (packed + maxCols - 1) / maxCols;
             int col = 0, row = 0, item = 0;
             for (int p = 0; p < packed; p++, item++)
             {
                 bool secondNetRow = net && p == l.NetPos + 1;
-                bool secondGpuRow = l.GpuContent == GpuTaskbarContent.Both && p == l.TempPos;
                 int rowSpan = net && p == l.NetPos ? 2 : 1;
-                if (!secondNetRow && !secondGpuRow && row > 0 && col + 1 < maxCols
+                if (!secondNetRow && row > 0 && col + 1 < maxCols
                     && (row + rowSpan > target || items - item - 1 < maxCols - 1 - col))
                 { col++; row = 0; }
                 l.SetPosCell(p, col, row);
@@ -410,7 +568,7 @@ namespace task_monitor
             if (net) { l.NetCol = l.PosCol(l.NetPos); l.NetRow = l.PosRow(l.NetPos); }
             l.Columns = col + 1;
             l.Width = l.Columns * w0 + (net ? w3 - w0 : 0f);
-            int maxRows = Math.Max(Math.Max(l.ColRows0, l.ColRows1), Math.Max(l.ColRows2, l.ColRows3));
+            int maxRows = Math.Max(Math.Max(Math.Max(l.ColRows0, l.ColRows1), Math.Max(l.ColRows2, l.ColRows3)), l.ColRows4);
             l.Height = maxRows * l.RowH;
             return l;
         }
@@ -426,9 +584,8 @@ namespace task_monitor
         // Horizontal: a stacked slot's row comes from its PACKED position (positions 0/2/4
         // = the top row of their cell, 1/3/5 = the bottom row); slot 4 (网络) spans the whole
         // height. Vertical: the column grid's cell (VerticalSlotRect) — 网络's two-row block.
-        // In 两者 mode slot 3 IS the whole two-row GPU block (like 网络), so this returns
-        // the whole cell; the individual value rows reach their rects through TryPosRect
-        // with the slot's two packed positions.
+        // 网络's two value rows reach their own rects through TryPosRect with the slot's two
+        // packed positions.
         private static bool TrySlotRect(OverlayLayout l, float top, float mid, float bottom, int slot, out D2D_RECT_F r)
         {
             r = default;
@@ -441,13 +598,13 @@ namespace task_monitor
             }
             int pos = l.PositionOf(slot);
             if (!TryPosRect(l, top, mid, bottom, pos, out r)) return false;
-            if (slot == 4 || (slot == 3 && l.GpuContent == GpuTaskbarContent.Both))
+            if (slot == 4)
                 r.bottom = bottom;
             return true;
         }
 
         // The rect of one packed row position — the position twin of TrySlotRect (which
-        // resolves a slot to its FIRST position); both rows of 网络 and GPU 两者 are included.
+        // resolves a slot to its FIRST position); both rows of 网络 are included.
         private static bool TryPosRect(OverlayLayout l, float top, float mid, float bottom, int pos, out D2D_RECT_F r)
         {
             r = default;
@@ -637,9 +794,9 @@ namespace task_monitor
         }
 
         // 设置 → 外观 → 紧凑模式: tighten the item pitch of EVERY form (horizontal cells,
-        // vertical row pitch, insets). LAYOUT, not a value — like the GPU 任务栏显示 content
-        // above, a flip POSTS WM_APP_SET_METRICS so the window resizes to the new layout and
-        // redraws at once. Same volatile single-writer contract as the rest.
+        // vertical row pitch, insets). LAYOUT, not a value — like 项目顺序 and 字體大小
+        // beside it, a flip POSTS WM_APP_SET_METRICS so the window resizes to the new layout
+        // and redraws at once. Same volatile single-writer contract as the rest.
         private volatile bool _compactLayout;
 
         /// <summary>Thread-safe: switch 紧凑模式 on/off. Called by App once before
@@ -653,7 +810,25 @@ namespace task_monitor
                 WindowInterop.PostMessageW(OverlayHwnd, WindowInterop.WM_APP_SET_METRICS, IntPtr.Zero, IntPtr.Zero);
         }
 
-        private volatile bool _showSeparators = true;
+        /// <summary>
+        /// Thread-safe: 字體大小 — scale the overlay's whole type-derived grid at once
+        /// (see <see cref="_layoutScale"/>: the pitch constants are the 13px measurements
+        /// multiplied by S(), so the type and the geometry must move together or a label
+        /// collides with its value). The scale is process-wide (the constants are static),
+        /// hence static, and the UI thread calls it once per overlay through
+        /// TaskbarOverlayManager. The text formats are rebuilt on the OWNING thread in the
+        /// WM_APP_SET_METRICS handler (RebuildTextFormats) — this window's DWrite factory is
+        /// ISOLATED per HWND, so touching its formats from the UI thread would cross an STA
+        /// (§46), and DWrite has no per-format font-size setter anyway.
+        /// </summary>
+        internal void SetOverlayLayoutScale(float scale)
+        {
+            _layoutScale = Math.Max(MinLayoutScale, Math.Min(MaxLayoutScale, scale));
+            if (OverlayHwnd != IntPtr.Zero)
+                WindowInterop.PostMessageW(OverlayHwnd, WindowInterop.WM_APP_SET_METRICS, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        private volatile bool _showSeparators;   // 默认不画分割线（App 启动后按 settings.yaml 覆写）
 
         internal void SetShowSeparators(bool on)
         {
@@ -668,16 +843,38 @@ namespace task_monitor
         internal void SetItemOrder(IEnumerable<int> order)
         {
             _itemOrder = NormalizeItemOrder(order);
+            UpdateCpuTempDemand();
             if (OverlayHwnd != IntPtr.Zero)
                 WindowInterop.PostMessageW(OverlayHwnd, WindowInterop.WM_APP_SET_METRICS, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        // 温度 is ITS OWN item (slot 5) now, so 项目顺序 — not the old CPU 任务栏显示 switch —
+        // is what keeps the on-demand CPU sensor pack loaded when no detail window is open
+        // (gotcha §49). The order is the single source of truth: SetCpuTaskbarContent still
+        // records its setting but no longer decides the demand.
+        private void UpdateCpuTempDemand()
+            => _sampling.SetCpuTaskbarTemperature(OrderContains(5));
+
+        private bool OrderContains(int slot)
+        {
+            var order = _itemOrder;
+            return order != null && Array.IndexOf(order, slot) >= 0;
         }
 
         public void SetMergeSamePathProcesses(bool on) => _sampling.SetMergeByPath(on);
         public void SetDiskDisplay(int mode, int index) => _sampling.SetDiskDisplay(mode, index);
         public void SetGpuDisplay(int mode, int index) => _sampling.SetGpuDisplay(mode, index);
 
+        // 任务栏显示 (使用率/温度/两者/显存) is superseded by the 8-slot 项目顺序 — GPU 使用率,
+        // 温度 and 显存 are three independent rows now. The settings are still RECORDED (the
+        // 设置 page still drives them, and 温度单位 still applies to the 温度 row), so the
+        // values stay as the change-detection baseline instead of being dropped.
         private volatile GpuTaskbarContent _gpuTaskbarContent = GpuTaskbarContent.Usage;
         private volatile bool _gpuTempFahrenheit;
+
+        /// <summary>CPU 任务栏显示 (设置 → 采样项目 → CPU，右键菜单亦可): recorded, but the
+        /// overlay no longer swaps slot 0 for a temperature — 温度 is slot 5.</summary>
+        private volatile CpuTaskbarContent _cpuTaskbarContent = CpuTaskbarContent.Usage;
 
         public void SetGpuTempDisplay(GpuTaskbarContent content, int tempIndex, bool fahrenheit)
         {
@@ -687,15 +884,36 @@ namespace task_monitor
 
         internal void SetOverlayGpuTempDisplay(GpuTaskbarContent content, bool fahrenheit)
         {
+            bool changed = _gpuTaskbarContent != content || _gpuTempFahrenheit != fahrenheit;
             _gpuTaskbarContent = content;
             _gpuTempFahrenheit = fahrenheit;
-            if (OverlayHwnd != IntPtr.Zero)
-                WindowInterop.PostMessageW(OverlayHwnd, WindowInterop.WM_APP_SET_METRICS, IntPtr.Zero, IntPtr.Zero);
+            if (changed && OverlayHwnd != IntPtr.Zero)
+                WindowInterop.PostMessageW(OverlayHwnd, WindowInterop.WM_APP_SNAPSHOT, IntPtr.Zero, IntPtr.Zero);
         }
 
         public void SetNetAdapter(string id) => _sampling.SetNetAdapter(id);
         public void SetClashApi(bool enabled, string address, string secret) => _sampling.SetClashApi(enabled, address, secret);
         public void SetPublicIpLookup(bool enabled) => _sampling.SetPublicIpLookup(enabled);
+
+        /// <summary>CPU 任务栏显示 (使用率 / 温度). Recorded only — 温度 has its own slot (5),
+        /// so its whole effect is the redraw below plus the demand re-derived from 项目顺序
+        /// (UpdateCpuTempDemand).</summary>
+        public void SetCpuTaskbarContent(CpuTaskbarContent content)
+        {
+            bool changed = _cpuTaskbarContent != content;
+            _cpuTaskbarContent = content;
+            UpdateCpuTempDemand();
+            if (changed && OverlayHwnd != IntPtr.Zero)
+                WindowInterop.PostMessageW(OverlayHwnd, WindowInterop.WM_APP_SNAPSHOT, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        /// <summary>Repaint with the latest snapshot — no relayout, no resample. Used by the
+        /// manager after a runtime language switch (the labels live in the draw pass).</summary>
+        internal void RequestRedraw()
+        {
+            if (OverlayHwnd != IntPtr.Zero)
+                WindowInterop.PostMessageW(OverlayHwnd, WindowInterop.WM_APP_SNAPSHOT, IntPtr.Zero, IntPtr.Zero);
+        }
 
         // ---------- 悬浮模式 (floating form) ----------
         // top-level WS_POPUP standing on the desktop — the SAME window class, layout, drawing,
@@ -882,43 +1100,44 @@ namespace task_monitor
         // Current layout's logical width (hidden slots are gone, not blank) — read by
         // DetailWindow to centre its popup over a column.
         internal float LogicalWidth
-            => ComputeLayout(_samplingEnabledMask, _gpuTaskbarContent, _layoutVertical, _layoutAvailWidth, _compactLayout, _itemOrder).Width;
+            => ComputeLayout(_samplingEnabledMask, _layoutVertical, _layoutAvailWidth, _compactLayout, _itemOrder).Width;
 
         // Total layout height in DIPs — meaningful only in VERTICAL mode (horizontal
         // layouts take the band's height; the layout owns none). DetailWindow reads it
         // for the centre ratio when the taskbar is docked left/right.
         internal float LogicalHeight => _layoutVertical
-            ? ComputeLayout(_samplingEnabledMask, _gpuTaskbarContent, true, _layoutAvailWidth, _compactLayout, _itemOrder).Height
+            ? ComputeLayout(_samplingEnabledMask, true, _layoutAvailWidth, _compactLayout, _itemOrder).Height
             : 0f;
 
-        // X centre of a hit slot — used to centre the detail popup over its column. A
-        // stacked slot's centre is its PACKED cell's centre (the cell it shifted into;
-        // slot 3 centres on its FIRST row's cell — the utilization row in 两者 mode);
-        // slot 4 is the 网络 group's. A hidden slot has no centre (0) — it can never be
-        // clicked or pinned into existence. Vertical mode: the cell's column centre (the
-        // width-adaptive grid can put the slots in different columns).
-        internal float ColumnCenter(int slot)
+        // X centre of a DETAIL COLUMN — used to centre the detail popup over its item. A
+        // column is anchored on its canonical slot (the slot of the same number: 0=CPU使用率…),
+        // so the extra rows (温度/显存) never move the page's own anchor. A stacked slot's centre is
+        // its PACKED cell's centre (the cell it shifted into); slot 4 is the 网络 group's. A slot the
+        // bar does not show has no centre (0) — it can never be clicked or pinned into existence.
+        // Vertical mode: the cell's column centre (the width-adaptive grid can put the slots in
+        // different columns).
+        internal float ColumnCenter(int column)
         {
             if (_layoutVertical)
             {
-                var lv = ComputeLayout(_samplingEnabledMask, _gpuTaskbarContent, true, _layoutAvailWidth, _compactLayout, _itemOrder);
-                return VerticalSlotRect(lv, slot, out float left, out _, out float right, out _)
+                var lv = ComputeLayout(_samplingEnabledMask, true, _layoutAvailWidth, _compactLayout, _itemOrder);
+                return VerticalSlotRect(lv, column, out float left, out _, out float right, out _)
                     ? (left + right) / 2f
                     : 0f;
             }
-            var l = ComputeLayout(_samplingEnabledMask, _gpuTaskbarContent, false, 0f, _compactLayout, _itemOrder);
-            int pos = l.PositionOf(slot);
+            var l = ComputeLayout(_samplingEnabledMask, false, 0f, _compactLayout, _itemOrder);
+            int pos = l.PositionOf(column);
             return pos >= 0 ? l.GroupLeft(pos / 2) + l.GroupW(pos / 2) / 2f : 0f;
         }
 
-        // Y centre of a hit slot — VERTICAL mode only (0 otherwise, unused there): the
+        // Y centre of a DETAIL COLUMN — VERTICAL mode only (0 otherwise, unused there): the
         // cell's vertical centre; slot 4 (网络) centres over its two-row ↑/↓ block. Same
         // hidden-slot-returns-0 contract as ColumnCenter.
-        internal float ColumnCenterY(int slot)
+        internal float ColumnCenterY(int column)
         {
             if (!_layoutVertical) return 0f;
-            var l = ComputeLayout(_samplingEnabledMask, _gpuTaskbarContent, true, _layoutAvailWidth, _compactLayout, _itemOrder);
-            return VerticalSlotRect(l, slot, out _, out float top, out _, out float bottom)
+            var l = ComputeLayout(_samplingEnabledMask, true, _layoutAvailWidth, _compactLayout, _itemOrder);
+            return VerticalSlotRect(l, column, out _, out float top, out _, out float bottom)
                 ? (top + bottom) / 2f
                 : 0f;
         }
@@ -936,18 +1155,18 @@ namespace task_monitor
         }
 
         /// <summary>
-        /// Bitmask of hit slots (bit 0–4) whose left-click press is suppressed — set while
-        /// that slot's window is pinned (the pinned window owns it until unpinned or closed).
+        /// Bitmask of DETAIL COLUMNS (bit 0–4) whose left-click press is suppressed — set while
+        /// that column's window is pinned (the pinned window owns it until unpinned or closed).
         /// Hover is unaffected. Single writer (the WPF UI thread), read on the taskbar thread
         /// in WndProc.
         /// </summary>
         private volatile int _clickDisabledMask;
 
-        /// <summary>Thread-safe: suppress or restore a hit slot's press. Idempotent.</summary>
-        public void SetColumnClickEnabled(int slot, bool enabled)
+        /// <summary>Thread-safe: suppress or restore a detail column's press. Idempotent.</summary>
+        public void SetColumnClickEnabled(int column, bool enabled)
         {
-            if (slot < 0 || slot >= SlotCount) return;
-            int bit = 1 << slot;
+            if (column < 0 || column >= DetailColumnCount) return;
+            int bit = 1 << column;
             _clickDisabledMask = enabled ? (_clickDisabledMask & ~bit) : (_clickDisabledMask | bit);
         }
 
@@ -1110,10 +1329,10 @@ namespace task_monitor
             // every later Draw/HitTest rebuilds the SAME layout from this, never from the
             // rounded window width (see RenderState.AvailWidthDip).
             float verticalAvail = vertical ? VerticalAvailWidth(verticalBandW, dpi) : 0f;
-            ComputeTargetSize(_samplingEnabledMask, _gpuTaskbarContent, vertical, dpi,
+            ComputeTargetSize(_samplingEnabledMask, vertical, dpi,
                 verticalBandW, classical ? rcBar.bottom - rcBar.top : taskbarBandH, _compactLayout, _itemOrder,
                 out int physicalWidth, out int physicalHeight);
-            var startupLayout = ComputeLayout(_samplingEnabledMask, _gpuTaskbarContent, vertical, verticalAvail, _compactLayout, _itemOrder);
+            var startupLayout = ComputeLayout(_samplingEnabledMask, vertical, verticalAvail, _compactLayout, _itemOrder);
             Logger.Info($"显示器={displayName} 任务栏族={(classical ? "经典(Win10/ExplorerPatcher)" : "Win11")} 竖直={vertical}"
                 + (vertical ? $"（任务栏 {taskbarRect.right - taskbarRect.left}x{taskbarRect.bottom - taskbarRect.top}px，条带宽 {taskbarBandW}px，{VerticalFormName(startupLayout)}）" : "")
                 + $" DPI={dpi} 覆盖层={physicalWidth}x{physicalHeight}px 采样掩码=0x{_samplingEnabledMask:X2} 间隔={_sampleIntervalMs}ms 紧凑={_compactLayout} 分割线={_showSeparators}{AnchorDiag(dpi)}");
@@ -1300,41 +1519,7 @@ namespace task_monitor
             // full-alpha value first.
             var dwrite = DWriteFunctions.DWriteCreateFactory(DWRITE_FACTORY_TYPE.DWRITE_FACTORY_TYPE_ISOLATED);
             state.DWriteFactory = dwrite;
-            var labelFormat = dwrite.CreateTextFormat("Segoe UI", 13f);
-            labelFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING);
-            labelFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            labelFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
-            var valueFormat = dwrite.CreateTextFormat("Segoe UI", 13f);
-            valueFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_TRAILING);
-            valueFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            valueFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
-
-            // Net column's ↑/↓ rates flush-RIGHT to line up on the column's right edge,
-            // matching the stacked groups' right-aligned numeric column.
-            var netFormat = dwrite.CreateTextFormat("Segoe UI", 13f);
-            netFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_TRAILING);
-            netFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            netFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
-            // The VERTICAL two-line form's pair (a side taskbar's strips are ~46 DIP wide —
-            // STRIP_TWO_LINE_MIN_W): label and value both CENTRED across the strip, the label
-            // a size smaller and dimmed (LabelBrush) so the value stays the headline. A
-            // side taskbar is the only place these are used.
-            var stripLabelFormat = dwrite.CreateTextFormat("Segoe UI", 11f);
-            stripLabelFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
-            stripLabelFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            stripLabelFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
-            var stripValueFormat = dwrite.CreateTextFormat("Segoe UI", 13f);
-            stripValueFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
-            stripValueFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            stripValueFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
-            // Device-INDEPENDENT (they come from the DWrite factory, not the D3D device):
-            // created once here and kept across a device loss — RecoverDevice only rebuilds
-            // the pipeline, never the text formats.
-            state.LabelFormat = labelFormat;
-            state.ValueFormat = valueFormat;
-            state.NetFormat = netFormat;
-            state.StripLabelFormat = stripLabelFormat;
-            state.StripValueFormat = stripValueFormat;
+            CreateTextFormats(state, dwrite);
 
             // === Step 6: the device pipeline (D3D11 → DXGI swap chain → D2D1 → DComp) ===
             // CreateDeviceResources is the SAME method the post-device-loss recovery runs
@@ -1543,9 +1728,9 @@ namespace task_monitor
         // Rendering: the visible groups per the current layout (ComputeLayout — a metric
         // with its sampling off is GONE, not blank: the later metrics shift forward to
         // fill its row position, an emptied group vanishes and the window narrows; the
-        // grid keeps its two-row structure everywhere). Rows are "label flush-left,
-        // value flush-right"; 网络 keeps its ↑/↓ column. Hover/selection highlights the
-        // individual hit slot (one row of a stacked group, or the whole 网络 column).
+        // grid keeps its two-row structure everywhere). Rows are "value flush-right under the
+        // cell's title" — a fused tile (CPU/GPU 使用率+溫度) titles its cell once; 网络 keeps its
+        // ↑/↓ column. Hover/selection fills the tile's whole cell (TryHighlightRect).
         // --------------------------------------------------------------------
         private static void Draw(RenderState s)
         {
@@ -1554,7 +1739,11 @@ namespace task_monitor
             // Draw calls harmless while the device is down.
             if (s == null || s.DeviceLost || s.D2dContext == null) return;
 
-            var layout = ComputeLayout(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, s.Vertical,
+            // Column widths are MEASURED text, so the measurement has to run before the layout
+            // that consumes it (first draw after a font-scale change: one frame at the floor
+            // widths, then the tick resizes — see ColumnNeedsDirty).
+            MeasureColumnNeeds(s);
+            var layout = ComputeLayout(s.Owner._samplingEnabledMask, s.Vertical,
                 s.AvailWidthDip, s.Owner._compactLayout, s.Owner._itemOrder);
             if (layout.Width <= 0f) return;   // every metric off — the overlay is a stub
 
@@ -1639,7 +1828,7 @@ namespace task_monitor
                 if (i == s.Selected) brush = s.HighlightBrush;
                 else if (i == s.Hovered) brush = s.HoverBrush;
                 if (brush == null) continue;
-                if (!TrySlotRect(layout, top, mid, bottom, i, out var hlRect)) continue;
+                if (!TryHighlightRect(layout, top, mid, bottom, i, out var hlRect)) continue;
 
                 // 悬浮模式: a plain rect, no radius. Its fill runs to the widget's edges, and a
                 // radius there carves arcs out of the fill exactly where it meets the edge (the
@@ -1655,24 +1844,18 @@ namespace task_monitor
                     ctx.FillRoundedRectangle(
                         new D2D1_ROUNDED_RECT { rect = hlRect, radiusX = 6f, radiusY = 6f },
                         brush);
-                // 任务栏显示 两者: hlRect already IS slot 3's whole two-row block (TrySlotRect
-                // extends it), so the pair highlights as one item with no extra fill here.
             }
 
             // Grid separators, framing each metric cell. 1px hairlines centred on the
             // boundary (FillRectangle, not DrawLine, so they stay crisp integer pixels).
             // Vertical lines sit at the left edge of every visible group except the first.
-            // The horizontal mid line spans every visible STACKED group except a cell ONE
-            // item occupies whole — 网络's column and 两者's GPU block are single two-row
-            // items, no divider cuts them (the 2026-10-17 request); a shared stacked cell
-            // keeps the line (a trailing hole is still a row).
+            // The horizontal mid line spans every visible STACKED cell that holds TWO items —
+            // 网络's column is a single two-row item, no divider cuts it (the 2026-10-17
+            // request), and neither is a lone item nor a fused device TILE (use+temp of one
+            // device): their two rows are one block, not two items.
             if (s.Owner._showSeparators)
             {
                 const float lineHalf = 0.5f;
-                // SlotVisible guard: GPU's sampling can be off while the content setting stays
-                // 两者 — PositionOf would then be -1, and -1/2 truncates to 0 (group 0!).
-                int gpuBlockGroup = layout.GpuContent == GpuTaskbarContent.Both && layout.SlotVisible(3)
-                    ? layout.PositionOf(3) / 2 : -1;
                 int netBlockGroup = layout.NetVisible ? layout.NetPos / 2 : -1;
                 bool boundaryBefore = false;
                 for (int g = 0; g < GroupCount; g++)
@@ -1682,27 +1865,43 @@ namespace task_monitor
                     float gx1 = gx0 + layout.GroupW(g);
                     if (boundaryBefore)
                         ctx.FillRectangle(new D2D_RECT_F { left = gx0 - lineHalf, top = top, right = gx0 + lineHalf, bottom = bottom }, s.SeparatorBrush);
-                    if (g != netBlockGroup && g != gpuBlockGroup)
+                    // The mid line separates the two ITEMS of a shared cell. A lone item has no
+                    // second item under it (it draws as one two-band block — GroupIsLone), so a
+                    // line there would cut its own label off its value. A FUSED TILE (one device
+                    // title over its own two values) is the same case: the line would slice the
+                    // title in half between 使用率 and 溫度 — 「cpu同gpu不應該有橫線應該像磁碟一樣」
+                    // (user report 2026-11-18). A cell shared by two DIFFERENT metrics (显存 over
+                    // 内存) keeps it, because there the line really does separate two items.
+                    if (g != netBlockGroup && !GroupIsLone(layout, g) && !TryColumnLabel(layout, g, out _))
                         ctx.FillRectangle(new D2D_RECT_F { left = gx0, top = mid - lineHalf, right = gx1, bottom = mid + lineHalf }, s.SeparatorBrush);
                     boundaryBefore = true;
                 }
             }
 
-            // One row per visible slot. GPU falls back to "--" when no adapter exists at
-            // all (or dxcore.dll is missing) — unrelated to the sampling switches.
-            DrawSlotRow(ctx, s, layout, top, mid, bottom, 0, "CPU", $"{s.Snapshot.CpuPercent:F0}%");
-            DrawSlotRow(ctx, s, layout, top, mid, bottom, 1, "内存", $"{s.Snapshot.RamPercent:F0}%");
-            DrawSlotRow(ctx, s, layout, top, mid, bottom, 2, "磁盘", $"{s.Snapshot.DiskPercent:F0}%");
-            // …and GPU's rows (任务栏显示): 使用率/温度 draw ONE labelled row each (温度
-            // swaps the utilization row in place); 两者 is ONE 网络-style two-row block —
-            // the single "GPU" label vertically centred, usage over temperature.
-            GpuRowValues(s, out string gpuUsageText, out string gpuTempText);
-            if (layout.GpuContent == GpuTaskbarContent.Both)
-                DrawGpuBothBlock(ctx, s, layout, top, mid, bottom, gpuUsageText, gpuTempText);
-            else if (layout.TempPos >= 0)
-                DrawPosRow(ctx, s, layout, top, mid, bottom, layout.TempPos, "GPU", gpuTempText);
-            else
-                DrawSlotRow(ctx, s, layout, top, mid, bottom, 3, "GPU", gpuUsageText);
+            // A fused TILE names its device ONCE and stacks its two values under that title —
+            // 「cpu gpu溫度佔用應該像磁碟一樣只顯示一個標題然後上下兩個數值」. Painted over the whole
+            // cell so the title centres between the values instead of reading as the upper row's
+            // own label; the rows below then draw their VALUE only (DrawSingleSlot).
+            for (int g = 0; g < GroupCount; g++)
+            {
+                if (!TryColumnRect(layout, top, bottom, g, out var tileRect)) continue;
+                if (GroupIsLone(layout, g) || !TryColumnLabel(layout, g, out string tileLabel)) continue;
+                float tileInset = RowInset(layout.Compact);
+                var titleRect = new D2D_RECT_F
+                {
+                    left = tileRect.left + tileInset,
+                    top = top,
+                    right = tileRect.right - tileInset,
+                    bottom = bottom,
+                };
+                ctx.DrawText(tileLabel, s.LabelFormat, titleRect, s.LabelBrush);
+            }
+
+            // One row per visible slot, in SLOT order — each single-row metric owns exactly one
+            // packed position, so the draw order never matters. A metric whose sampling is off
+            // has no position and paints nothing (DrawSlotRow's TryPosRect).
+            for (int slot = 0; slot < SlotCount; slot++)
+                DrawSingleSlot(ctx, s, layout, top, mid, bottom, slot);
 
             // 网络 column: ↑/↓ is the "label" (flush-left), the rate is the "value" (flush-right)
             // — same label/value split as the stacked groups, just stacked ↑ over ↓.
@@ -1746,11 +1945,11 @@ namespace task_monitor
         // (TrafficMonitor's vertical mode). A NARROW bar (one ~48-DIP column: the stock 26H2
         // left taskbar) cannot hold the single-line "label … value" pair, so layout.TwoLine
         // turns every metric into a padded label-over-value BLOCK (DrawStripLines) — one
-        // block per metric (per-item heights: StripPosH), the multi-row blocks shrinking to
-        // their content (GpuBothStripBlockH/NetStripBlockH) and 网络's ↑/↓ cluster carrying
-        // the compact rate form (NetRateFormatter.FormatCompact). A GRID column is only
-        // 70/84 DIP wide, so its rows use the single-line form (label left, value right —
-        // the horizontal cells' proven look), not the two-line one.
+        // block per metric (per-item heights: StripPosH), the multi-row 网络 block shrinking
+        // to its content (NetStripBlockH) and its ↑/↓ cluster carrying the compact rate form
+        // (NetRateFormatter.FormatCompact). A GRID column is only 70/84 DIP wide, so its rows
+        // use the single-line form (label left, value right — the horizontal cells' proven
+        // look), not the two-line one.
         private static void DrawVertical(RenderState s, OverlayLayout layout)
         {
             var ctx = s.D2dContext;
@@ -1780,17 +1979,15 @@ namespace task_monitor
                 ctx.FillRoundedRectangle(
                     new D2D1_ROUNDED_RECT { rect = hlRect, radiusX = 6f, radiusY = 6f },
                     brush);
-                // 任务栏显示 两者: hlRect already IS slot 3's whole two-row block (TrySlotRect
-                // extends it), covering both rows wherever the flow put them.
             }
 
             // Hairlines on every row boundary and between columns — except INSIDE a
-            // multi-row item: 网络's ↑/↓ pair and 两者's GPU pair are one visual unit, no
-            // divider cuts them (the same rule the horizontal grid applies to 网络's column
-            // and the GPU block cell). A row IS the unit here otherwise — a single-line
-            // strip, or a whole two-line block — so no line ever cuts a metric's label off
-            // its own value. Columns can end at different heights; the column separator
-            // runs the full grid height, a column's last row simply has no line under it.
+            // multi-row item: 网络's ↑/↓ pair is one visual unit, no divider cuts it (the
+            // same rule the horizontal grid applies to 网络's column). A row IS the unit here
+            // otherwise — a single-line strip, or a whole two-line block — so no line ever
+            // cuts a metric's label off its own value. Columns can end at different heights;
+            // the column separator runs the full grid height, a column's last row simply has
+            // no line under it.
             if (s.Owner._showSeparators)
             {
                 const float lineHalf = 0.5f;
@@ -1799,7 +1996,6 @@ namespace task_monitor
                     // Item boundaries only; the second position of a two-row block has zero height.
                     for (int p = 1; p < PackedPositionCount && layout.SlotAt(p) >= 0; p++)
                     {
-                        if (layout.GpuContent == GpuTaskbarContent.Both && p == layout.TempPos) continue;
                         if (layout.NetVisible && p == layout.NetPos + 1) continue;
                         float y = StripPosTop(layout, p);
                         ctx.FillRectangle(
@@ -1809,9 +2005,6 @@ namespace task_monitor
                 }
                 else
                 {
-                    int tempCol = layout.TempPos >= 0 ? layout.PosCol(layout.TempPos) : -1;
-                    int tempRow = layout.TempPos >= 0 ? layout.PosRow(layout.TempPos) : -1;
-                    bool gpuPair = layout.GpuContent == GpuTaskbarContent.Both;
                     for (int c = 0; c < layout.Columns; c++)
                     {
                         float x0 = layout.ColumnLeft(c);
@@ -1822,9 +2015,7 @@ namespace task_monitor
                                 s.SeparatorBrush);
                         for (int r = 1; r < layout.ColRows(c); r++)
                         {
-                            bool insideNet = layout.NetCol == c && layout.NetRow == r - 1;
-                            bool insideGpuPair = gpuPair && tempCol == c && tempRow == r;
-                            if (insideNet || insideGpuPair) continue;
+                            if (layout.NetCol == c && layout.NetRow == r - 1) continue;
                             float y = r * layout.RowH;
                             ctx.FillRectangle(
                                 new D2D_RECT_F { left = x0, top = y - lineHalf, right = x1, bottom = y + lineHalf },
@@ -1834,19 +2025,13 @@ namespace task_monitor
                 }
             }
 
+            // Every single-row metric, in whichever form this layout selected: the grid's
+            // one-line row, or the narrow bar's label-over-value block (DrawSingleSlot picks).
+            for (int slot = 0; slot < SlotCount; slot++)
+                DrawSingleSlot(ctx, s, layout, 0f, 0f, 0f, slot);
+
             if (!layout.TwoLine)
             {
-                DrawSlotRow(ctx, s, layout, 0f, 0f, 0f, 0, "CPU", $"{s.Snapshot.CpuPercent:F0}%");
-                DrawSlotRow(ctx, s, layout, 0f, 0f, 0f, 1, "内存", $"{s.Snapshot.RamPercent:F0}%");
-                DrawSlotRow(ctx, s, layout, 0f, 0f, 0f, 2, "磁盘", $"{s.Snapshot.DiskPercent:F0}%");
-                GpuRowValues(s, out string gpuUsageText, out string gpuTempText);
-                if (layout.GpuContent == GpuTaskbarContent.Both)
-                    DrawGpuBothBlock(ctx, s, layout, 0f, 0f, 0f, gpuUsageText, gpuTempText);
-                else if (layout.TempPos >= 0)
-                    DrawPosRow(ctx, s, layout, 0f, 0f, 0f, layout.TempPos, "GPU", gpuTempText);
-                else
-                    DrawSlotRow(ctx, s, layout, 0f, 0f, 0f, 3, "GPU", gpuUsageText);
-
                 // 网络's two rows: ↑/↓ flush-left labels, rates flush-right — the same split as
                 // the horizontal column, stacked instead of side by side.
                 if (TrySlotRect(layout, 0f, 0f, 0f, 4, out var netRect))
@@ -1863,33 +2048,176 @@ namespace task_monitor
                 return;
             }
 
-            DrawStripBlock(ctx, s, layout, 0, "CPU", $"{s.Snapshot.CpuPercent:F0}%");
-            DrawStripBlock(ctx, s, layout, 1, "内存", $"{s.Snapshot.RamPercent:F0}%");
-            DrawStripBlock(ctx, s, layout, 2, "磁盘", $"{s.Snapshot.DiskPercent:F0}%");
-            GpuRowValues(s, out string gpuUsageBlockText, out string gpuTempBlockText);
-            if (layout.GpuContent == GpuTaskbarContent.Both)
-                DrawGpuBothStripBlock(ctx, s, layout, gpuUsageBlockText, gpuTempBlockText);
-            else if (layout.TempPos >= 0)
-                DrawStripPosBlock(ctx, s, layout, layout.TempPos, "GPU", gpuTempBlockText);
-            else
-                DrawStripBlock(ctx, s, layout, 3, "GPU", gpuUsageBlockText);
-                if (TrySlotRect(layout, 0f, 0f, 0f, 4, out var netBlock))
-                {
-                    // BOTH modes draw the whole ↑/↓ pair as one four-line cluster
-                    // (DrawNetStripCluster) — the pair is ONE hit slot with no separator
-                    // inside it, and no other form separates the two rows either. 紧凑模式
-                    // gets the tight natural bands, the default the regular strip pitch.
-                    string upText = NetRateFormatter.FormatCompact(s.Snapshot.NetUpBytesPerSec);
-                    string downText = NetRateFormatter.FormatCompact(s.Snapshot.NetDownBytesPerSec);
-                    DrawNetStripCluster(ctx, s, netBlock.left, netBlock.top, netBlock.right, netBlock.bottom,
-                        upText, downText);
-                }
+            // The narrow bar's 网络 block: BOTH modes draw the whole ↑/↓ pair as one four-line
+            // cluster (DrawNetStripCluster) — the pair is ONE hit slot with no separator inside
+            // it, and no other form separates the two rows either. 紧凑模式 gets the tight
+            // natural bands, the default the regular strip pitch.
+            if (TrySlotRect(layout, 0f, 0f, 0f, 4, out var netBlock))
+            {
+                string upText = NetRateFormatter.FormatCompact(s.Snapshot.NetUpBytesPerSec);
+                string downText = NetRateFormatter.FormatCompact(s.Snapshot.NetDownBytesPerSec);
+                DrawNetStripCluster(ctx, s, netBlock.left, netBlock.top, netBlock.right, netBlock.bottom,
+                    upText, downText);
+            }
+        }
+
+        // One single-row metric, in the form the layout chose: the two-line strip BLOCK on a
+        // narrow side taskbar (label over value), else the one-line "label … value" row. The
+        // label/value pair is the only per-slot part (SlotLabelValue), so every single-row
+        // metric reaches the pixels through this one path. 网络 is the one TWO-row item and
+        // its own cluster draws it — callers can keep passing every slot.
+        private static void DrawSingleSlot(
+            IComObject<ID2D1DeviceContext> ctx, RenderState s, OverlayLayout layout,
+            float top, float mid, float bottom, int slot)
+        {
+            if (slot == 4) return;   // 网络: ↑/↓ cluster, drawn by DrawHorizontal/DrawVertical
+            SlotLabelValue(s, slot, out string label, out string value);
+            if (layout.Vertical && layout.TwoLine)
+            {
+                DrawStripBlock(ctx, s, layout, slot, label, value);
+                return;
+            }
+            int pos = layout.PositionOf(slot);
+            // A fused TILE draws its two VALUES under one title, which DrawHorizontal paints
+            // over the whole cell — the row must not repeat the device name under it.
+            if (!layout.Vertical && pos >= 0 && !GroupIsLone(layout, pos / 2)
+                && TryColumnLabel(layout, pos / 2, out _))
+            {
+                DrawPosValue(ctx, s, layout, top, mid, bottom, pos, value);
+                return;
+            }
+            // An item packed ALONE in its two-row cell (the visible item count is odd) fills the
+            // whole cell — label band on top, value band below — instead of drawing on the upper
+            // row and leaving a blank row under it. The report was 「所有格都有東西，不會空一格
+            // 出來」: 显存 was the odd item and left exactly that hole beside 网络's column.
+            if (!layout.Vertical && pos >= 0 && GroupIsLone(layout, pos / 2))
+            {
+                if (TrySlotRect(layout, top, mid, bottom, slot, out var lone))
+                    DrawLoneCell(ctx, s, lone.left, top, lone.right, bottom, label, value);
+                return;
+            }
+            DrawSlotRow(ctx, s, layout, top, mid, bottom, slot, label, value);
+        }
+
+        // True when a two-row cell holds exactly one item, i.e. its lower row is a HOLE (only
+        // 网络 legally owns both rows of a cell). Such a cell draws as one two-band block.
+        private static bool GroupIsLone(OverlayLayout layout, int group)
+        {
+            int top = group * 2;
+            if (top < 0 || top >= PackedPositionCount) return false;
+            if (layout.SlotAt(top) < 0) return false;
+            int bottom = top + 1;
+            return bottom >= PackedPositionCount || layout.SlotAt(bottom) < 0;
+        }
+
+        // The title a TILE shows once: the columns whose two rows are the SAME device's two
+        // quantities (CPU 使用率 + CPU 溫度, GPU 使用率 + GPU 溫度). False when the two rows are
+        // different metrics (显存 beside 記憶體) — those keep their own per-row labels, because a
+        // shared title would be a lie about what the second row is.
+        private static bool TryColumnLabel(OverlayLayout layout, int group, out string label)
+        {
+            label = null;
+            int top = group * 2;
+            if (top < 0 || top >= PackedPositionCount) return false;
+            int first = layout.SlotAt(top);
+            if (first < 0 || first == 4) return false;
+            label = SlotLabelText(first);
+            int bottom = top + 1;
+            int second = bottom < PackedPositionCount ? layout.SlotAt(bottom) : -1;
+            if (second < 0 || second == 4) return false;
+            return SlotLabelText(second) == label;
+        }
+
+        // The whole-cell rect of one horizontal group, both rows included. The tile title and a
+        // tile's hover/selection fill use it — a tile is ONE region, not two rows.
+        private static bool TryColumnRect(OverlayLayout layout, float top, float bottom, int group, out D2D_RECT_F r)
+        {
+            r = default;
+            if (!layout.GroupVisible(group)) return false;
+            float gx0 = layout.GroupLeft(group);
+            r = new D2D_RECT_F { left = gx0, top = top, right = gx0 + layout.GroupW(group), bottom = bottom };
+            return true;
+        }
+
+        // The rect a hover/selection fills. Horizontal TILES — a lone row, or a fused
+        // 使用率+溫度 pair — are one metric owning its whole cell, so the fill covers the WHOLE
+        // cell (「磁碟也應該將可按地方整欄高光」); a cell shared by two DIFFERENT metrics keeps
+        // per-row fills so each stays individually addressable. A vertical row is already one
+        // metric per line, so its row rect stands.
+        private static bool TryHighlightRect(OverlayLayout l, float top, float mid, float bottom, int slot, out D2D_RECT_F r)
+        {
+            r = default;
+            if (!l.Vertical)
+            {
+                int pos = l.PositionOf(slot);
+                if (pos < 0) return false;
+                int group = pos / 2;
+                if (GroupIsLone(l, group) || TryColumnLabel(l, group, out _))
+                    return TryColumnRect(l, top, bottom, group, out r);
+            }
+            return TrySlotRect(l, top, mid, bottom, slot, out r);
+        }
+
+        // What one single-row slot is LABELLED (the width measurement's left half, and the draw
+        // pass's label — one source, so a measured column can never disagree with what it draws).
+        private static string SlotLabelText(int slot)
+        {
+            switch (slot)
+            {
+                case 1: return OverlayLabel("overlay.label.ram");
+                case 2: return OverlayLabel("overlay.label.disk");
+                case 3: return "GPU";
+                case 4: return "↑";     // 网络's label band; ↓ is drawn beneath it by DrawNetStripCluster
+                // The temperature rows name the DEVICE, not the quantity: two rows both labelled
+                // 「溫度」 (CPU and GPU) were indistinguishable at a glance — the report was
+                // "cpu溫度和gpu溫度都顯示溫度根本不知道哪個跟哪個". The °C in the value already says
+                // "this is a temperature", and "CPU"/"GPU" fit the narrowest cell without eating
+                // the number's room, which 「CPU 溫度」 would.
+                case 5: return "CPU";
+                case 6: return "GPU";
+                case 7: return OverlayLabel("overlay.label.vram");
+                default: return "CPU";   // 0 = CPU 使用率, and the fallback for an unknown slot
+            }
+        }
+
+        // What one single-row slot SAYS: its label and its formatted value. "--" is the shared
+        // "no data" form — a missing adapter, a sensor pack that is still warming up or
+        // absent, or a device with no dedicated memory. Unrelated to the sampling switches
+        // (those decide whether the row EXISTS, in ComputeLayout).
+        private static void SlotLabelValue(RenderState s, int slot, out string label, out string value)
+        {
+            var snapshot = s.Snapshot;
+            label = SlotLabelText(slot);
+            switch (slot)
+            {
+                case 1:
+                    value = $"{snapshot.RamPercent:F0}%";
+                    return;
+                case 2:
+                    value = $"{snapshot.DiskPercent:F0}%";
+                    return;
+                case 3:
+                    value = snapshot.GpuAvailable ? $"{snapshot.GpuPercent:F0}%" : "--";
+                    return;
+                case 5:
+                    value = snapshot.CpuTempValid ? $"{snapshot.CpuTempCelsius:F0}°C" : "--";
+                    return;
+                case 6:
+                    value = GpuTempText.Format(
+                        snapshot.GpuTempValid ? snapshot.GpuTempCelsius : double.NaN,
+                        s.Owner?._gpuTempFahrenheit ?? false);
+                    return;
+                case 7:
+                    value = snapshot.GpuVramValid ? $"{snapshot.GpuVramPercent:F0}%" : "--";
+                    return;
+                default:   // 0 = CPU 使用率
+                    value = $"{snapshot.CpuPercent:F0}%";
+                    return;
+            }
         }
 
         // One metric's two-line block (the narrow side-taskbar form): its whole block rect —
-        // DrawStripLines owns the label/value split and the padding around it. The position
-        // core (DrawStripPosBlock) also serves slot 3's 温度-only row (温度 swaps the
-        // utilization row; 两者 draws the combined block below instead).
+        // DrawStripLines owns the label/value split and the padding around it.
         private static void DrawStripBlock(
             IComObject<ID2D1DeviceContext> ctx, RenderState s, OverlayLayout layout,
             int slot, string label, string value)
@@ -1901,46 +2229,6 @@ namespace task_monitor
         {
             if (!TryPosRect(layout, 0f, 0f, 0f, pos, out var r)) return;
             DrawStripLines(ctx, s, r.left, r.top, r.right, r.bottom, label, value);
-        }
-
-        // 任务栏显示 两者's GPU block in the two-line strip form: ONE multi-line block
-        // carrying the "GPU" label line over its TWO value lines (usage, temperature) —
-        // the narrow form's reading of the one-label-two-values rule the wide forms draw
-        // beside their values. BOTH modes size the block to its content +
-        // the mode's pads (GpuBothStripBlockH): the DEFAULT's span-derived bands then land
-        // exactly on the strip's regular 17.5-DIP pitch, 紧凑模式's tight natural-height
-        // bands fill its shrunk block exactly (STRIP_LABEL/VALUE_BAND_H's remark).
-        private static void DrawGpuBothStripBlock(
-            IComObject<ID2D1DeviceContext> ctx, RenderState s, OverlayLayout layout,
-            string usageValue, string tempValue)
-        {
-            if (!TrySlotRect(layout, 0f, 0f, 0f, 3, out var r)) return;
-            const float inset = 2f;
-            bool compact = s.Owner._compactLayout;
-            float pad = StripBlockPad(compact);
-            float contentTop = r.top + pad;
-            float contentBottom = r.bottom - pad;
-            D2D_RECT_F labelRect, usageRect, tempRect;
-            if (compact)
-            {
-                float stack = STRIP_LABEL_BAND_H + 2f * STRIP_VALUE_BAND_H + 2f * STRIP_LINE_GAP;
-                float y = contentTop + Math.Max(0f, (contentBottom - contentTop - stack) / 2f);
-                labelRect = new D2D_RECT_F { left = r.left + inset, top = y, right = r.right - inset, bottom = y + STRIP_LABEL_BAND_H };
-                y += STRIP_LABEL_BAND_H + STRIP_LINE_GAP;
-                usageRect = new D2D_RECT_F { left = r.left + inset, top = y, right = r.right - inset, bottom = y + STRIP_VALUE_BAND_H };
-                y += STRIP_VALUE_BAND_H + STRIP_LINE_GAP;
-                tempRect = new D2D_RECT_F { left = r.left + inset, top = y, right = r.right - inset, bottom = y + STRIP_VALUE_BAND_H };
-            }
-            else
-            {
-                float lineH = (contentBottom - contentTop - 2f * STRIP_LINE_GAP) / 3f;
-                labelRect = new D2D_RECT_F { left = r.left + inset, top = contentTop, right = r.right - inset, bottom = contentTop + lineH };
-                usageRect = new D2D_RECT_F { left = r.left + inset, top = contentTop + lineH + STRIP_LINE_GAP, right = r.right - inset, bottom = contentTop + 2f * (lineH + STRIP_LINE_GAP) };
-                tempRect = new D2D_RECT_F { left = r.left + inset, top = usageRect.bottom + STRIP_LINE_GAP, right = r.right - inset, bottom = contentBottom };
-            }
-            ctx.DrawText("GPU", s.StripLabelFormat, labelRect, s.LabelBrush);
-            ctx.DrawText(usageValue, s.StripValueFormat, usageRect, s.TextBrush);
-            ctx.DrawText(tempValue, s.StripValueFormat, tempRect, s.TextBrush);
         }
 
         // The 网络 strip block in BOTH modes: ↑/↓ with their rates as ONE four-line cluster.
@@ -1960,7 +2248,7 @@ namespace task_monitor
             float contentTop = top + StripBlockPad(compact);
             float contentBottom = bottom - StripBlockPad(compact);
             float labelBand, valueBand;
-            if (compact) { labelBand = STRIP_LABEL_BAND_H; valueBand = STRIP_VALUE_BAND_H; }
+            if (compact) { labelBand = StripLabelBandH; valueBand = StripValueBandH; }
             else labelBand = valueBand = (contentBottom - contentTop - 3f * STRIP_LINE_GAP) / 4f;
             float stack = 2f * (labelBand + valueBand) + 3f * STRIP_LINE_GAP;
             float y = contentTop + Math.Max(0f, (contentBottom - contentTop - stack) / 2f);
@@ -1977,15 +2265,43 @@ namespace task_monitor
             ctx.DrawText(downValue, s.StripValueFormat, downRect, s.TextBrush);
         }
 
+        // One row's VALUE only — the rows of a fused tile carry no label of their own (the
+        // column title is painted once, centred over the whole cell).
+        private static void DrawPosValue(
+            IComObject<ID2D1DeviceContext> ctx, RenderState s, OverlayLayout layout,
+            float top, float mid, float bottom, int pos, string value)
+        {
+            if (!TryPosRect(layout, top, mid, bottom, pos, out var r)) return;
+            float inset = RowInset(layout.Compact);
+            var cell = new D2D_RECT_F { left = r.left + inset, top = r.top, right = r.right - inset, bottom = r.bottom };
+            ctx.DrawText(value, s.ValueFormat, cell, s.TextBrush);
+        }
+
         // The two lines of one strip ROW: a small dim label over a full-size value, both
         // centred, STRIP_LINE_GAP apart and STRIP_BLOCK_PAD clear of the row's edges — a
-        // two-line row is STRIP_BLOCK_H tall while its pair needs only 2×STRIP_H, and the
+        // two-line row is STRIP_BLOCK_H tall while its pair needs only 2×StripH, and the
         // leftover is what makes a label read as belonging to the value beneath it rather than
         // to the next row's (at the first, tight version the two lines collided: the 布局不合理
         // report). The line height is DERIVED from the row, so STRIP_BLOCK_H is the one knob.
         // Inset 2 DIP, not the single-line form's 5 — the strip is only ~46 DIP wide and the
         // text is centred, so the padding keeps the glyphs off the neighbouring taskbar
         // surface rather than separating a label from a value.
+        // A metric that has no partner in its cell fills the WHOLE cell — one centred line,
+        // label flush left, value flush right, exactly like every other row (LiteMonitor's
+        // TaskbarRenderer draws a single-item column over the full column bounds, vertically
+        // centred). The earlier two-band version (label on the top band, value on the bottom)
+        // made the odd column read as a different KIND of cell; it was the 「排列方式非常之不好」
+        // report: 磁碟 sat alone as a label above an empty row while its neighbours were rows.
+        private static void DrawLoneCell(
+            IComObject<ID2D1DeviceContext> ctx, RenderState s,
+            float left, float top, float right, float bottom, string label, string value)
+        {
+            float inset = RowInset(s.Owner._compactLayout);
+            var cell = new D2D_RECT_F { left = left + inset, top = top, right = right - inset, bottom = bottom };
+            ctx.DrawText(label, s.LabelFormat, cell, s.LabelBrush);
+            ctx.DrawText(value, s.ValueFormat, cell, s.TextBrush);
+        }
+
         private static void DrawStripLines(
             IComObject<ID2D1DeviceContext> ctx, RenderState s,
             float left, float top, float right, float bottom, string label, string value)
@@ -2004,9 +2320,7 @@ namespace task_monitor
         // One metric's row: label flush-left and value flush-right against the same cell
         // rect — values form one right-aligned column on the group's right edge, labels a
         // left-aligned column on its left, with the gap floating between them. A hidden
-        // slot (sampling off) has no rect and draws nothing. The position core
-        // (DrawPosRow) also serves slot 3's 温度-only row (温度 swaps the utilization row;
-        // 两者 draws the combined block below instead).
+        // slot (sampling off) has no rect and draws nothing.
         private static void DrawSlotRow(
             IComObject<ID2D1DeviceContext> ctx, RenderState s, OverlayLayout layout,
             float top, float mid, float bottom, int slot, string label, string value)
@@ -2023,38 +2337,15 @@ namespace task_monitor
             ctx.DrawText(value, s.ValueFormat, cell, s.TextBrush);
         }
 
-        // 任务栏显示 两者's GPU block — 网络's form for one metric (either orientation's
-        // one-line forms; TrySlotRect(3) IS the whole two-row block): the usage value over
-        // the temperature value, flush-right one per row split at the block's centre, and
-        // the ONE "GPU" label flush-left, vertically centred across the pair (every format
-        // is PARAGRAPH_CENTER, so the whole-block rect does it). No separator runs through
-        // the block — the separator loop skips cells one item occupies whole.
-        private static void DrawGpuBothBlock(
-            IComObject<ID2D1DeviceContext> ctx, RenderState s, OverlayLayout layout,
-            float top, float mid, float bottom, string usageValue, string tempValue)
+        // Overlay label with the user-override applied and a hard length cap: the stacked cell
+        // is 76 DIP, so a label wider than ~6 CJK glyphs would squeeze the value into nothing.
+        // Over-long custom names are truncated rather than allowed to break the row (the full
+        // name is still what the user typed — this is a draw-time clamp only).
+        private static string OverlayLabel(string source)
         {
-            if (!TrySlotRect(layout, top, mid, bottom, 3, out var block)) return;
-            float inset = RowInset(layout.Compact);
-            var cell = new D2D_RECT_F { left = block.left + inset, top = block.top, right = block.right - inset, bottom = block.bottom };
-            var usageRow = new D2D_RECT_F { left = cell.left, top = cell.top, right = cell.right, bottom = cell.top + (cell.bottom - cell.top) / 2f };
-            var tempRow = new D2D_RECT_F { left = cell.left, top = usageRow.bottom, right = cell.right, bottom = cell.bottom };
-            ctx.DrawText("GPU", s.LabelFormat, cell, s.LabelBrush);
-            ctx.DrawText(usageValue, s.ValueFormat, usageRow, s.TextBrush);
-            ctx.DrawText(tempValue, s.ValueFormat, tempRow, s.TextBrush);
-        }
-
-        // The GPU slot's taskbar value strings. 任务栏显示 (设置 → 采样项目 → GPU) picks
-        // WHICH rows exist — that's the layout's packing, callers gate on the layout —
-        // this picks what they SAY: the utilization headline (per 显示方式) and the
-        // temperature headline (per 温度来源) in the 温度单位 format (GpuTempText, shared
-        // with the detail popup). "--" when no adapter exists at all (GpuAvailable false)
-        // or the driver reports no temperature (TempValid false).
-        private static void GpuRowValues(RenderState s, out string usageValue, out string tempValue)
-        {
-            usageValue = s.Snapshot.GpuAvailable ? $"{s.Snapshot.GpuPercent:F0}%" : "--";
-            tempValue = GpuTempText.Format(
-                s.Snapshot.GpuTempValid ? s.Snapshot.GpuTempCelsius : double.NaN,
-                s.Owner._gpuTempFahrenheit);
+            string text = Loc.L(source);
+            if (string.IsNullOrEmpty(text)) return text;
+            return text.Length <= 6 ? text : text.Substring(0, 5) + "…";
         }
 
         // Apply the controller's latest publication on this HWND's own thread. Sampling
@@ -2277,6 +2568,71 @@ namespace task_monitor
             s.D3dDevice = null;
         }
 
+        // The overlay's five text formats, at whatever `_layoutScale` is NOW — one construction
+        // site for Start's step 5 and for a 字體大小 change (RebuildTextFormats). All of them
+        // are NO_WRAP: a taskbar cell is ONE line, so text that overflows its cell must never
+        // wrap to two. Labels draw at reduced alpha (LabelBrush) so they recede and the eye
+        // lands on the full-alpha value first.
+        private static void CreateTextFormats(RenderState s, IComObject<IDWriteFactory> dwrite)
+        {
+            // Stacked-group rows are "label … value": label flush-LEFT, value flush-RIGHT, so
+            // every value lines up on the group's right edge (one right-aligned numeric column,
+            // easy to scan across rows) and every label on its left.
+            var labelFormat = dwrite.CreateTextFormat("Segoe UI", S(13f));
+            labelFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING);
+            labelFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            labelFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
+            var valueFormat = dwrite.CreateTextFormat("Segoe UI", S(13f));
+            valueFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_TRAILING);
+            valueFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            valueFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
+
+            // Net column's ↑/↓ rates flush-RIGHT to line up on the column's right edge,
+            // matching the stacked groups' right-aligned numeric column.
+            var netFormat = dwrite.CreateTextFormat("Segoe UI", S(13f));
+            netFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_TRAILING);
+            netFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            netFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
+            // The VERTICAL two-line form's pair (a side taskbar's strips are ~46 DIP wide —
+            // StripTwoLineMinW): label and value both CENTRED across the strip, the label
+            // a size smaller and dimmed (LabelBrush) so the value stays the headline. A
+            // side taskbar is the only place these are used.
+            var stripLabelFormat = dwrite.CreateTextFormat("Segoe UI", S(11f));
+            stripLabelFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
+            stripLabelFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            stripLabelFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
+            var stripValueFormat = dwrite.CreateTextFormat("Segoe UI", S(13f));
+            stripValueFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
+            stripValueFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            stripValueFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
+            // Device-INDEPENDENT (they come from the DWrite factory, not the D3D device):
+            // kept across a device loss — RecoverDevice only rebuilds the pipeline, never the
+            // text formats.
+            s.LabelFormat = labelFormat;
+            s.ValueFormat = valueFormat;
+            s.NetFormat = netFormat;
+            s.StripLabelFormat = stripLabelFormat;
+            s.StripValueFormat = stripValueFormat;
+            // The measured column widths hang off these formats (their size IS the font scale),
+            // so new formats invalidate the text-width cache and the per-slot needs.
+            InvalidateColumnMetrics();
+        }
+
+        // Re-create the five formats at the current `_layoutScale`. DWrite has no
+        // IDWriteTextFormat::SetFontSize (the font size is fixed when the format is created),
+        // so a 字體大小 change means new formats — but NOT a new factory: it is the isolated
+        // per-HWND one and stays valid. Taskbar thread only.
+        private static void RebuildTextFormats(RenderState s)
+        {
+            if (s.DWriteFactory == null) return;   // pipeline not built yet — Start creates them
+            ReleaseCom(ref s.StripValueFormat);
+            ReleaseCom(ref s.StripLabelFormat);
+            ReleaseCom(ref s.NetFormat);
+            ReleaseCom(ref s.ValueFormat);
+            ReleaseCom(ref s.LabelFormat);
+            CreateTextFormats(s, s.DWriteFactory);
+        }
+
         private static void ReleaseTextResources(RenderState s)
         {
             ReleaseCom(ref s.StripValueFormat);
@@ -2381,7 +2737,7 @@ namespace task_monitor
 
         private static void ComputeFloatingTargetSize(RenderState s, uint dpi, out int width, out int height)
         {
-            var layout = ComputeLayout(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent,
+            var layout = ComputeLayout(s.Owner._samplingEnabledMask,
                 false, 0f, s.Owner._compactLayout, s.Owner._itemOrder);
             width = layout.Width > 0f ? DpiScaleCeil(layout.Width, dpi) : 0;
             height = layout.Width > 0f ? DpiScaleCeil(s.FloatingHeightDip, dpi) : 0;
@@ -2412,7 +2768,7 @@ namespace task_monitor
                 if (!s.Vertical && bandH <= 0) return;   // the band isn't laid out yet
                 if (s.Vertical && bandW <= 0) return;
                 if (s.Vertical) s.AvailWidthDip = VerticalAvailWidth(bandW, newDpi);
-                ComputeTargetSize(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, s.Vertical, newDpi, bandW, bandH,
+                ComputeTargetSize(s.Owner._samplingEnabledMask, s.Vertical, newDpi, bandW, bandH,
                     s.Owner._compactLayout, s.Owner._itemOrder, out newPhysicalWidth, out newPhysicalHeight);
             }
             Logger.Info($"DPI 变化 {s.Dpi}→{newDpi}——覆盖层重设 {newPhysicalWidth}x{newPhysicalHeight}px");
@@ -2466,7 +2822,7 @@ namespace task_monitor
             {
                 GetBandSize(s, out int bandW, out int bandH);
                 if (s.Vertical) s.AvailWidthDip = VerticalAvailWidth(bandW, s.Dpi);
-                ComputeTargetSize(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, s.Vertical, s.Dpi, bandW, bandH,
+                ComputeTargetSize(s.Owner._samplingEnabledMask, s.Vertical, s.Dpi, bandW, bandH,
                     s.Owner._compactLayout, s.Owner._itemOrder, out newWidth, out newHeight);
             }
             if (newWidth == s.PhysicalWidth && newHeight == s.PhysicalHeight) return;
@@ -3512,11 +3868,11 @@ namespace task_monitor
                 // as HandleDpiChange, DPI unchanged.
                 int bandW = TaskbarBandCross(s.TaskbarHwnd, taskbarRect, out int bandX);
                 s.AvailWidthDip = VerticalAvailWidth(bandW, s.Dpi);
-                ComputeTargetSize(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, true, s.Dpi, bandW, 0,
+                ComputeTargetSize(s.Owner._samplingEnabledMask, true, s.Dpi, bandW, 0,
                     s.Owner._compactLayout, s.Owner._itemOrder, out int wantW, out int wantH);
                 if (wantW > 0 && wantH > 0 && (wantW != s.PhysicalWidth || wantH != s.PhysicalHeight))
                 {
-                    var wantLayout = ComputeLayout(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, true,
+                    var wantLayout = ComputeLayout(s.Owner._samplingEnabledMask, true,
                         s.AvailWidthDip, s.Owner._compactLayout, s.Owner._itemOrder);
                     Logger.Info($"竖直任务栏条带变化 {s.PhysicalWidth}x{s.PhysicalHeight}→{wantW}x{wantH}px（{VerticalFormName(wantLayout)}）——覆盖层跟随重设");
                     ResizeBackBuffer(s, wantW, wantH, s.Dpi);
@@ -3551,7 +3907,7 @@ namespace task_monitor
             TaskbarBand(s.TaskbarHwnd, taskbarRect, out int taskbarHeight, out int bandY);
             if (taskbarHeight > 0 && taskbarHeight != s.PhysicalHeight)
             {
-                ComputeTargetSize(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, false, s.Dpi, 0, taskbarHeight,
+                ComputeTargetSize(s.Owner._samplingEnabledMask, false, s.Dpi, 0, taskbarHeight,
                     s.Owner._compactLayout, s.Owner._itemOrder, out int newW, out int newH);
                 if (newW > 0 && newH > 0)
                 {
@@ -4131,7 +4487,7 @@ namespace task_monitor
 
             GetBandSize(s, out int bandW, out int bandH);
             s.AvailWidthDip = s.Vertical ? VerticalAvailWidth(bandW, s.Dpi) : 0f;
-            ComputeTargetSize(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, s.Vertical, s.Dpi, bandW, bandH,
+            ComputeTargetSize(s.Owner._samplingEnabledMask, s.Vertical, s.Dpi, bandW, bandH,
                 s.Owner._compactLayout, s.Owner._itemOrder, out int newWidth, out int newHeight);
             if (newWidth > 0 && newHeight > 0)
                 ResizeBackBuffer(s, newWidth, newHeight, s.Dpi);
@@ -4192,16 +4548,19 @@ namespace task_monitor
         // Width/Height become the target. Those are rounded UP so the window never clips the
         // grid at fractional DPI scaling (125%, 175%). A 0 in the layout-driven dimension =
         // the every-metric-off stub (the caller keeps the old buffers).
-        private static void ComputeTargetSize(int mask, GpuTaskbarContent gpuContent, bool vertical, uint dpi, int bandW, int bandH,
+        private static void ComputeTargetSize(int mask, bool vertical, uint dpi, int bandW, int bandH,
             bool compact, int[] itemOrder, out int width, out int height)
         {
             if (!vertical)
             {
-                width = DpiScaleInt((int)ComputeLayout(mask, gpuContent, false, 0f, compact, itemOrder).Width, dpi);
+                // CEIL, not truncate: the column widths are measured text, i.e. fractional DIP,
+                // and dropping the fraction leaves the right-most column short by up to a pixel
+                // — which cut the trailing glyph off 网络's rate (the 「0 B/」 report).
+                width = DpiScaleCeil(ComputeLayout(mask, false, 0f, compact, itemOrder).Width, dpi);
                 height = bandH;
                 return;
             }
-            var l = ComputeLayout(mask, gpuContent, true, VerticalAvailWidth(bandW, dpi), compact, itemOrder);
+            var l = ComputeLayout(mask, true, VerticalAvailWidth(bandW, dpi), compact, itemOrder);
             width = l.Width > 0f ? DpiScaleCeil(l.Width, dpi) : 0;
             height = l.Height > 0f ? DpiScaleCeil(l.Height, dpi) : 0;
         }
@@ -4542,13 +4901,20 @@ namespace task_monitor
                         short y = (short)((lp >> 16) & 0xFFFF);
                         int clicked = HitTestSlot(s, x, y);
 
-                        // A slot whose window is pinned is press-disabled (hover still
+                        // `clicked` is the SLOT (the highlight unit); everything the UI thread
+                        // knows about is addressed by DETAIL COLUMN (the popup page), so the
+                        // press is judged and reported in columns: 温度/显存 open their metric's
+                        // page (DetailColumn), and the pinned-column / sampling-off masks are
+                        // column bitmasks too.
+                        int column = clicked >= 0 ? DetailColumn(clicked) : -1;
+
+                        // A column whose window is pinned is press-disabled (hover still
                         // works) — the pinned window owns it until unpinned or closed.
-                        // Same for a slot whose sampling is off (设置 → 采样): it is
-                        // hidden and has no data, so a press must do nothing. (Hit-test
+                        // Same for a metric whose sampling is off (设置 → 采样): its rows are
+                        // hidden and have no data, so a press must do nothing. (Hit-test
                         // already never returns hidden slots; this is the second line.)
                         int suppressed = s.Owner._clickDisabledMask | ~s.Owner._samplingEnabledMask;
-                        if (clicked >= 0 && (suppressed & (1 << clicked)) != 0)
+                        if (column >= 0 && (suppressed & (1 << column)) != 0)
                             return IntPtr.Zero;
 
                         // Toggle: clicking the active column deselects (closes popup).
@@ -4560,7 +4926,7 @@ namespace task_monitor
                         // foreground lock so the WPF popup (same process) can activate.
                         WindowInterop.AllowSetForegroundWindow(WindowInterop.ASFW_ANY);
 
-                        s.ToggleCallback?.Invoke(newSel);
+                        s.ToggleCallback?.Invoke(newSel < 0 ? -1 : DetailColumn(newSel));
                     }
                     return IntPtr.Zero;
                 }
@@ -4575,8 +4941,11 @@ namespace task_monitor
                 {
                     // UI thread asked us to clear the highlight for a specific column
                     // (its popup closed) — ignore it if the selection has since moved on.
+                    // Compared by COLUMN, not by slot: the highlighted row may be the page's
+                    // 温度/显存 row while the message only names the page.
                     var s = StateOf(hwnd);
-                    if (s != null && s.Selected == wParam.ToInt32())
+                    int column = wParam.ToInt32();
+                    if (s != null && s.Selected >= 0 && DetailColumn(s.Selected) == column)
                     {
                         s.Selected = -1;
                         Draw(s);
@@ -4591,13 +4960,21 @@ namespace task_monitor
                 case WindowInterop.WM_APP_SELECT:
                 {
                     // UI thread marked a column selected (its window became a flyout
-                    // again after unpinning) — force the highlight to that column.
+                    // again after unpinning) — force the highlight to that column. A
+                    // selection that already belongs to that page keeps ITS row.
                     var s = StateOf(hwnd);
-                    int col = wParam.ToInt32();
-                    if (s != null && col >= 0 && s.Selected != col)
+                    if (s != null)
                     {
-                        s.Selected = col;
-                        Draw(s);
+                        int column = wParam.ToInt32();
+                        if (column >= 0 && (s.Selected < 0 || DetailColumn(s.Selected) != column))
+                        {
+                            int slot = SlotForColumn(s, column);
+                            if (slot >= 0)
+                            {
+                                s.Selected = slot;
+                                Draw(s);
+                            }
+                        }
                     }
                     return IntPtr.Zero;
                 }
@@ -4757,20 +5134,25 @@ namespace task_monitor
                 case WindowInterop.WM_APP_SET_METRICS:
                 {
                     // UI thread flipped a per-metric sampling switch (SetMetricSamplingMask;
-                    // the sampler already has the new mask), the GPU 任务栏显示 content
-                    // (SetGpuTempDisplay — slot 3's row count, and so the layout width,
-                    // changes with it), 紧凑模式 (SetCompactLayout — the item pitch changes),
-                    // or 项目顺序 (SetItemOrder) — resize to the new layout (hidden slots
-                    // free their space), then re-sample + redraw now.
+                    // the sampler already has the new mask), 紧凑模式 (SetCompactLayout — the
+                    // item pitch changes), 项目顺序 (SetItemOrder — different rows, and with
+                    // them a different size) or 字體大小 (SetOverlayLayoutScale) — resize to
+                    // the new layout (hidden slots free their space), then redraw now.
                     var s = StateOf(hwnd);
                     if (s != null)
                     {
+                        // The scale moved the DIPs the whole grid is derived from, so the five
+                        // text formats have to move with it. Done HERE, on the owning thread:
+                        // this window's DWrite factory is ISOLATED per HWND (§46).
+                        RebuildTextFormats(s);
+
                         // Drop a stale selection/hover on a now-hidden slot (normally App
                         // closing the column's windows already deselected via RequestDeselect
-                        // — belt-and-braces for the race).
+                        // — belt-and-braces for the race). Visibility is the METRIC's sampling
+                        // bit (SampleBit), which 温度/显存 share with their metric.
                         int mask = s.Owner._samplingEnabledMask;
-                        if (s.Selected >= 0 && (mask & (1 << s.Selected)) == 0) s.Selected = -1;
-                        if (s.Hovered >= 0 && (mask & (1 << s.Hovered)) == 0) s.Hovered = -1;
+                        if (s.Selected >= 0 && (mask & (1 << SampleBit(s.Selected))) == 0) s.Selected = -1;
+                        if (s.Hovered >= 0 && (mask & (1 << SampleBit(s.Hovered))) == 0) s.Hovered = -1;
                         ResizeForLayout(hwnd, s);
                         DrawPublishedSnapshot(s);
                     }
@@ -4933,6 +5315,17 @@ namespace task_monitor
                         }
 
                         DrawPublishedSnapshot(s);
+
+                        // A column width derived from MEASURED text (MeasureColumnNeeds) changes
+                        // only when the labels, the font scale or the compact pitch change — never
+                        // per tick — so this resizes at most once per configuration change, and
+                        // ResizeForLayout no-ops when the size came out the same.
+                        if (s.ColumnNeedsDirty)
+                        {
+                            s.ColumnNeedsDirty = false;
+                            ResizeForLayout(hwnd, s);
+                            DrawPublishedSnapshot(s);
+                        }
                     }
                     return IntPtr.Zero;
                 }
@@ -5083,19 +5476,23 @@ namespace task_monitor
         private static int DpiScaleCeil(float value, uint dpi)
             => (int)Math.Ceiling(value * dpi / USER_DEFAULT_SCREEN_DPI);
 
-        // 2D hit-test over the CURRENT layout. Horizontal: x picks a visible group (the
-        // last visible group extends to the window's right edge, so the whole width is
-        // covered); inside a stacked group, y picks the row POSITION, which maps to
-        // whichever metric packed into it — a trailing hole (an odd count's, or the one
-        // 两者's GPU block pads before its cell) hits nothing (-1); the 网络 group is one
-        // whole-column slot regardless of y, and 两者's GPU block likewise maps both rows
-        // to slot 3. Vertical: the COLUMN GRID — x picks the column, y the row in it; a
-        // packed cell maps to its slot (either line of a two-line block clicks the
-        // metric), 网络's ↑/↓ pair is one slot, and an empty cell (a ragged column's
-        // trailing hole) hits nothing.
+        // 2D hit-test over the CURRENT layout, returning the hit SLOT (0..7). Horizontal: x
+        // picks a visible group (the last visible group extends to the window's right edge, so
+        // the whole width is covered); inside a stacked group, y picks the row POSITION, which
+        // maps to whichever metric packed into it — a trailing hole hits nothing (-1); the 网络
+        // group is one whole-column slot regardless of y. Vertical: the COLUMN GRID — x picks
+        // the column, y the row in it; a packed cell maps to its slot (either line of a
+        // two-line block clicks the metric), 网络's ↑/↓ pair is one slot, and an empty cell (a
+        // ragged column's trailing hole) hits nothing.
+        //
+        // It returns the SLOT, not the detail column, because a cell shared by two DIFFERENT
+        // metrics (显存 beside 記憶體) highlights and clicks per row. A TILE — a lone row, or a
+        // fused 使用率+溫度 pair — is one region though: either row maps to the tile's first slot
+        // and the highlight fills the whole cell (TryHighlightRect). The page a click opens is
+        // DetailColumn(slot); the two only coincide for 0..4.
         private static int HitTestSlot(RenderState s, int x, int y)
         {
-            var layout = ComputeLayout(s.Owner._samplingEnabledMask, s.Owner._gpuTaskbarContent, s.Vertical,
+            var layout = ComputeLayout(s.Owner._samplingEnabledMask, s.Vertical,
                 s.AvailWidthDip, s.Owner._compactLayout, s.Owner._itemOrder);
             if (layout.Vertical)
             {
@@ -5121,8 +5518,33 @@ namespace task_monitor
                 if (x < left || x >= right) continue;
 
                 int midPhys = s.PhysicalHeight / 2;
-                return layout.SlotAt(g * 2 + (y < midPhys ? 0 : 1));
+                // A TILE is ONE clickable region: a lone row, or a fused 使用率+溫度 pair — either
+                // row opens the tile's page, and the hole under a lone row is not dead space
+                // (「應該只有一個可按地方」). A cell shared by two DIFFERENT metrics still picks by
+                // row, so 显存 and 記憶體 stay separately clickable.
+                int topSlot = layout.SlotAt(g * 2);
+                int bottomSlot = layout.SlotAt(g * 2 + 1);
+                if (GroupIsLone(layout, g) || TryColumnLabel(layout, g, out _))
+                    return topSlot >= 0 ? topSlot : bottomSlot;
+                return y < midPhys ? topSlot : bottomSlot;
             }
+            return -1;
+        }
+
+        // The SLOT that carries a detail column's highlight, for the column-addressed messages
+        // (RequestSelect/RequestDeselect carry App's DetailWindow column ids). The canonical
+        // slot — the one with the same number — wins when the bar shows it; otherwise the highest
+        // visible slot of that page (the opt-in 温度/显存 rows). A column whose metric is switched
+        // off has no slot: -1, i.e. nothing to highlight.
+        private static int SlotForColumn(RenderState s, int column)
+        {
+            if (column < 0 || column >= DetailColumnCount) return -1;
+            var l = ComputeLayout(s.Owner._samplingEnabledMask, s.Vertical,
+                s.AvailWidthDip, s.Owner._compactLayout, s.Owner._itemOrder);
+            if (l.SlotVisible(column) && l.PositionOf(column) >= 0) return column;
+            for (int slot = SlotCount - 1; slot >= DetailColumnCount; slot--)
+                if (DetailColumn(slot) == column && l.SlotVisible(slot) && l.PositionOf(slot) >= 0)
+                    return slot;
             return -1;
         }
 
@@ -5230,10 +5652,14 @@ namespace task_monitor
             public WindowInterop.RECT DiagOverlayRect;
             public bool TeardownRan;        // TeardownOverlay's once-guard (WM_DESTROY / bare WM_NCDESTROY — gotchas §43)
             public float LogicalHeight;
+            // A draw filled in newly MEASURED column widths (MeasureColumnNeeds) — the tick
+            // resizes the target right after that draw returns, never from inside it.
+            public bool ColumnNeedsDirty;
             public uint Dpi;
-            public int Hovered;
+            public int Hovered;         // hovered SLOT (0..7), -1 = none
             public bool TrackingMouse;
-            public int Selected;
+            public int Selected;        // selected SLOT (0..7), -1 = none — App speaks in detail
+                                        // columns; DetailColumn/SlotForColumn translate
             public bool LightTaskbar;   // taskbar theme the brushes are currently tinted for
             public Action<int> ToggleCallback;
             public Action RightClickRequested;

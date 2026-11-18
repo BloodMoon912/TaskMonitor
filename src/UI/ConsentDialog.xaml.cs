@@ -14,6 +14,8 @@ namespace task_monitor
         public ConsentDialog()
         {
             InitializeComponent();
+            // i18n: translate the built XAML tree once it is up (see Loc.ApplyOnce).
+            Loaded += (s, e) => Loc.ApplyOnce(this);
         }
 
         private void Allow_Click(object sender, RoutedEventArgs e) => DialogResult = true;

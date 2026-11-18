@@ -69,8 +69,25 @@ namespace task_monitor
             internal set => _temperatureCelsius = value;
         }
 
-        private string _topEngineText = "--";
-        /// <summary>Dominant engine this tick, e.g. "3D" ("--" while idle / engine-less).</summary>
+        private string _powerText = "--";
+        /// <summary>Board power from NVML ("17.8 W"), or "--" when nvml.dll/the driver does
+        /// not report one. Filled by <see cref="SensorRouter"/> — the DXCore sampler never
+        /// reads power (it exposes no such state).</summary>
+        public string PowerText
+        {
+            get => _powerText;
+            internal set { if (_powerText != value) { _powerText = value; Notify(nameof(PowerText)); } }
+        }
+
+        private string _fanText = "--";
+        /// <summary>Fan speed from NVML ("40 %"), or "--" (laptop GPUs often report none).</summary>
+        public string FanText
+        {
+            get => _fanText;
+            internal set { if (_fanText != value) { _fanText = value; Notify(nameof(FanText)); } }
+        }
+
+        private string _topEngineText = "--";        /// <summary>Dominant engine this tick, e.g. "3D" ("--" while idle / engine-less).</summary>
         public string TopEngineText
         {
             get => _topEngineText;
@@ -92,6 +109,37 @@ namespace task_monitor
             get => _sharedText;
             internal set { if (_sharedText != value) { _sharedText = value; Notify(nameof(SharedText)); } }
         }
+
+        /// <summary>Dedicated-segment node usage in bytes, as DXCore reports it (resident).
+        /// The numeric twin of <see cref="DedicatedText"/>'s left half — the VRAM headline and
+        /// its chart aggregate by NUMBER, never by parsing the display string.</summary>
+        public long VramUsedBytes { get; internal set; }
+
+        /// <summary>The Taskmgr-style dedicated cap in bytes (already nice-rounded by the
+        /// sampler). 0 on an integrated adapter with no dedicated usage — its VRAM% is then
+        /// invalid, exactly like Task Manager's "0.0 / 0.0 GB".</summary>
+        public long VramTotalBytes { get; internal set; }
+
+        private double _vramPercent = double.NaN;
+        /// <summary>0–100 dedicated usage over <see cref="VramTotalBytes"/>; NaN when the
+        /// adapter has no dedicated cap. The taskbar's 显存 row and the GPU detail header
+        /// read this.</summary>
+        public double VramPercent
+        {
+            get => _vramPercent;
+            internal set
+            {
+                if (_vramPercent.Equals(value)) return;
+                _vramPercent = value;
+                Notify(nameof(VramPercent));
+                Notify(nameof(VramPercentText));
+            }
+        }
+
+        /// <summary>"17%" next to the "2.0 / 11.7 GB" text in the detail popup; "--" when the
+        /// adapter has no dedicated segment (integrated GPU) or before the first sample.</summary>
+        public string VramPercentText
+            => double.IsNaN(_vramPercent) ? "--" : $"{_vramPercent:F0}%";
 
         private void Notify(string propertyName)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
@@ -127,6 +175,8 @@ namespace task_monitor
         public double[] History;                // recent HeadlinePercent (oldest→newest), for the chart
         public bool TempValid;                  // false → the taskbar temperature row shows "--"
         public double TempCelsius;              // headline temperature in °C (conversion is display-side)
+        public bool VramValid;                  // false → the taskbar 显存 row shows "--"
+        public double VramPercent;              // headline dedicated-memory % (per 显示方式)
         public List<GpuInfo> Gpus;              // per-adapter live metrics
     }
 
@@ -327,6 +377,11 @@ namespace task_monitor
             double tempMax = double.NaN;      // hottest valid reading across adapters
             double specificTemp = double.NaN;
             bool specificTempFound = false;
+            double vramSum = 0;
+            int vramCount = 0;
+            double vramMax = 0;
+            double specificVram = double.NaN;
+            bool specificVramFound = false;
             foreach (var entry in _adapters.Values)
             {
                 utilSum += entry.Info.UtilPercent;
@@ -344,6 +399,21 @@ namespace task_monitor
                     {
                         specificTemp = t;
                         specificTempFound = true;
+                    }
+                }
+                // 显存 aggregates exactly like utilization: mean across adapters, the max,
+                // or the picked "GPU N". Only adapters with a dedicated cap participate —
+                // an iGPU without a dedicated segment must not drag the mean to 0.
+                double vr = entry.Info.VramPercent;
+                if (!double.IsNaN(vr))
+                {
+                    vramSum += vr;
+                    vramCount++;
+                    if (vr > vramMax) vramMax = vr;
+                    if (entry.Info.Index == specificIndex)
+                    {
+                        specificVram = vr;
+                        specificVramFound = true;
                     }
                 }
             }
@@ -383,6 +453,20 @@ namespace task_monitor
             _history.Enqueue(headline);
             while (_history.Count > MaxHistory) _history.Dequeue();
 
+            // Headline 显存 (任务栏显示 = 显存): same 显示方式 rule as utilization.
+            double vramHeadline = 0;
+            bool vramValid = false;
+            if (vramCount > 0)
+            {
+                vramValid = true;
+                switch (mode)
+                {
+                    case MetricDisplayMode.Average: vramHeadline = vramSum / vramCount; break;
+                    case MetricDisplayMode.Specific: vramHeadline = specificVramFound ? specificVram : vramMax; break;
+                    default: vramHeadline = vramMax; break;
+                }
+            }
+
             // Publish a FRESH list each tick (the snapshot contract is never-mutated
             // objects; the GpuInfo items inside are the long-lived INPC ones).
             var gpus = new List<GpuInfo>(_adapters.Count);
@@ -397,6 +481,8 @@ namespace task_monitor
                 History = _history.ToArray(),
                 TempValid = tempValid,
                 TempCelsius = tempValid ? tempCelsius : 0,
+                VramValid = vramValid,
+                VramPercent = vramHeadline,
                 Gpus = gpus,
             };
         }
@@ -489,6 +575,15 @@ namespace task_monitor
                 long dedicatedTotal = entry.IsIntegrated && dedicatedUsed == 0 ? 0 : entry.DedicatedCapBytes;
                 entry.Info.DedicatedText = $"{ToGb(dedicatedUsed)} / {ToGb(dedicatedTotal)} GB";
                 entry.Info.SharedText = $"{ToGb(sharedUsed)} / {ToGb(entry.Info.SharedTotalBytes)} GB";
+
+                // Dedicated-memory percentage (显存): usage over the SAME Taskmgr-style cap
+                // the text above shows, so the two can never disagree. An integrated adapter
+                // with no dedicated segment keeps NaN → the row and the detail header say "--".
+                entry.Info.VramUsedBytes = dedicatedUsed;
+                entry.Info.VramTotalBytes = dedicatedTotal;
+                entry.Info.VramPercent = dedicatedTotal > 0
+                    ? Math.Min(100.0, dedicatedUsed * 100.0 / dedicatedTotal)
+                    : double.NaN;
 
                 entry.Failures = 0;
             }

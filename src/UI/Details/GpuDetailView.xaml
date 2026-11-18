@@ -5,8 +5,13 @@
              xmlns:ikw="http://schemas.inkore.net/lib/ui/wpf"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
              xmlns:local="clr-namespace:task_monitor"
+             xmlns:loc="clr-namespace:task_monitor.Localization"
              xmlns:fluent="clr-namespace:FluentWpfCore.Controls;assembly=FluentWpfCore"
              Background="Transparent">
+    <UserControl.Resources>
+        <loc:LocTextConverter x:Key="LocText" />
+    </UserControl.Resources>
+
 
     <ikw:SimpleStackPanel Spacing="12">
 
@@ -34,7 +39,7 @@
         <!-- Shown only when no GPU adapter exists at all (headless box / dxcore.dll missing). -->
         <Border x:Name="NoGpuPlaceholder" Background="Transparent" BorderThickness="0"
                 Padding="0,40,0,8" Visibility="Collapsed">
-            <TextBlock Text="未检测到 GPU"
+            <TextBlock Text="{loc:Tr detail.gpu.not-detected}"
                        FontSize="13" HorizontalAlignment="Center"
                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
         </Border>
@@ -44,7 +49,7 @@
              acrylic). Tab content updates via INotifyPropertyChanged on GpuInfo, so the
              ItemsSource only rebinds when the adapter SET changes and the selected tab
              survives every 1s tick. -->
-        <TabControl x:Name="GpuTabs" Background="Transparent" BorderThickness="0"
+        <TabControl x:Name="GpuTabs" Background="Transparent" BorderThickness="0" IsSynchronizedWithCurrentItem="False"
                     Style="{DynamicResource TabControlPivotStyle}">
             <TabControl.Resources>
                 <sys:Double x:Key="PivotHeaderItemFontSize">13</sys:Double>
@@ -63,56 +68,144 @@
             </TabControl.ItemTemplate>
             <TabControl.ContentTemplate>
                 <DataTemplate>
-                    <!-- NOTE: net48's Run.Text is NOT a dependency property (bindable only
-                         on .NET Core 3.0+), so label:value rows are two TextBlocks, not
-                         Runs — a binding on a Run crashes InitializeComponent. -->
+                    <!-- net48 的 Run.Text 不是相依性屬性（.NET Core 3.0 才改成 DP），所以
+                         DataTemplate 裡不能用具名 Run 綁定數值，改成一格兩個 TextBlock：標籤在左
+                         （次要色）、數值在右（主色）。兩者放在 Auto + * 的內層 Grid，是為了讓數值
+                         拿到「有限寬度」——橫向 StackPanel 量測時給的是無限寬，TextWrapping 永遠
+                         不會觸發，數值一長就直接壓到隔壁格。 -->
                     <ikw:SimpleStackPanel Spacing="8" Margin="0,10,0,2">
-                        <!-- Row 1 (full width): 名称 adapter description -->
+                        <!-- 名稱整列：介面卡描述（例如 "NVIDIA GeForce RTX 4070 Ti SUPER"）比半欄寬
+                             得多，塞進半欄會折成三行；它是這一頁的身份列、不算統計格的一格，所以
+                             放在統計格上方，維持 Auto + * 兩段式。 -->
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="名称：" FontSize="12"
+                            <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.name}" FontSize="12"
+                                       TextWrapping="Wrap" VerticalAlignment="Top"
                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                             <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="12"
-                                       TextTrimming="CharacterEllipsis" />
+                                       TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
                         </Grid>
-                        <!-- Row 2: 利用率 | 温度 -->
-                        <Grid>
+
+                        <!-- 統計格：與 CPU／記憶體／網路三頁共用同一套規範——兩欄等寬、一格只放一個
+                             「標籤：數值」、標籤用次要色而數值不加色。TextWrapping="Wrap" 不是裝飾：
+                             視窗遵守「字體大小」設定，1.15×/1.3× 時不換行的數值會衝進隔壁格（CPU
+                             頁就發生過「控制代碼 153,424執行時間 3天04:19:56」疊字）；換行讓 Auto
+                             列自己長高，任何縮放都不會互撞。左欄右邊距 8、右欄 0、最後一列 0。 -->
+                        <Grid Margin="0,2,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                <TextBlock Text="利用率：" FontSize="12"
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <!-- 第 0 列：使用率 | 溫度 -->
+                            <Grid Grid.Row="0" Grid.Column="0" Margin="0,0,8,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.usage}" FontSize="12"
+                                           TextWrapping="Wrap" VerticalAlignment="Top"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{Binding UtilPercent, StringFormat={}{0:F0}%}" FontSize="12" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <TextBlock Text="温度：" FontSize="12"
+                                <TextBlock Grid.Column="1" Text="{Binding UtilPercent, StringFormat={}{0:F0}%}"
+                                           FontSize="12" TextWrapping="Wrap" />
+                            </Grid>
+                            <Grid Grid.Row="0" Grid.Column="1" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.temp}" FontSize="12"
+                                           TextWrapping="Wrap" VerticalAlignment="Top"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{Binding TemperatureText}" FontSize="12" />
-                            </StackPanel>
+                                <TextBlock Grid.Column="1" Text="{Binding TemperatureText}" FontSize="12"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+
+                            <!-- 第 1 列：功耗 | 風扇（NVML 才有，DXCore 兩者都不提供；驅動沒回報時
+                                 顯示 "—"，不會留著上一次的舊數值） -->
+                            <Grid Grid.Row="1" Grid.Column="0" Margin="0,0,8,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.power}" FontSize="12"
+                                           TextWrapping="Wrap" VerticalAlignment="Top"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding PowerText}" FontSize="12"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+                            <Grid Grid.Row="1" Grid.Column="1" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.fan}" FontSize="12"
+                                           TextWrapping="Wrap" VerticalAlignment="Top"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding FanText}" FontSize="12"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+
+                            <!-- 第 2 列：負載類型 | 共用 GPU 記憶體（負載類型是這一 tick 佔比最高的
+                                 引擎，例如 "3D"；閒置時是 "—"） -->
+                            <Grid Grid.Row="2" Grid.Column="0" Margin="0,0,8,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.engine}" FontSize="12"
+                                           TextWrapping="Wrap" VerticalAlignment="Top"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding TopEngineText}" FontSize="12"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+                            <!-- 第 3 列：共用 GPU 記憶體獨占兩欄。半欄放不下「0.1 / 15.8 GB」——
+                                 它會在 360 DIP 的視窗裡折成兩行（"GB" 自己掉到下一行）。 -->
+                            <Grid Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.shared}" FontSize="12"
+                                           TextWrapping="Wrap" VerticalAlignment="Top"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding SharedText}" FontSize="12"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+
+                            <!-- 第 4 列（最後一列）：專用 GPU 記憶體獨占兩欄。標籤「專用 GPU 記憶體：」
+                                 本身就吃掉半欄一半以上，後面還要接「已駐留 / 上限」與百分比，半欄在
+                                 1.15×/1.3× 下一定折成一團；照規範讓最長的值放最後一列整列獨占。
+                                 百分比緊接在位元組數後面（第三欄），不做右對齊——右對齊會讓不同長度
+                                 的數值在換頁時左右跳動。 -->
+                            <Grid Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Tr detail.gpu.label.dedicated}" FontSize="12"
+                                           TextWrapping="Wrap" VerticalAlignment="Top"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding DedicatedText}" FontSize="12"
+                                           TextWrapping="Wrap" />
+                                <!-- 與左邊同一組數字的百分比：DXCore 的駐留位元組除以 Taskmgr 口徑的
+                                     上限，也就是工作列「显存」那一列顯示的值，兩處永遠不會矛盾。 -->
+                                <TextBlock Grid.Column="2" Text="{Binding VramPercentText}" FontSize="12"
+                                           TextWrapping="Wrap" Margin="8,0,0,0"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </Grid>
                         </Grid>
-                        <!-- Row 3: 负载类型 (dominant engine this tick, e.g. "3D"; dash while idle) -->
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="负载类型：" FontSize="12"
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                            <TextBlock Text="{Binding TopEngineText}" FontSize="12" />
-                        </StackPanel>
-                        <!-- Row 4: 专用 GPU 内存 (resident / cap, Taskmgr's rounded total) -->
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="专用 GPU 内存：" FontSize="12"
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                            <TextBlock Text="{Binding DedicatedText}" FontSize="12" />
-                        </StackPanel>
-                        <!-- Row 5: 共享 GPU 内存 (resident / SharedSystemMemory) -->
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="共享 GPU 内存：" FontSize="12"
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                            <TextBlock Text="{Binding SharedText}" FontSize="12" />
-                        </StackPanel>
                     </ikw:SimpleStackPanel>
                 </DataTemplate>
             </TabControl.ContentTemplate>
@@ -131,11 +224,11 @@
                         <ColumnDefinition Width="96" />
                         <ColumnDefinition Width="56" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="高占用进程" FontSize="12"
+                    <TextBlock Grid.Column="0" Text="{loc:Tr common.top-processes}" FontSize="12"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Grid.Column="1" Text="负载类型" FontSize="12" TextAlignment="Right"
+                    <TextBlock Grid.Column="1" Text="{loc:Tr detail.gpu.top-processes.engine}" FontSize="12" TextAlignment="Right"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Grid.Column="2" Text="用量" FontSize="12" TextAlignment="Right"
+                    <TextBlock Grid.Column="2" Text="{loc:Tr common.usage}" FontSize="12" TextAlignment="Right"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 </Grid>
                 <!-- Fixed height so the window (SizeToContent=Height) stays stable across
@@ -174,7 +267,7 @@
                                                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                                                 BorderThickness="1"
                                                 Visibility="{Binding TagVisibility}">
-                                            <TextBlock Text="{Binding TagText}" FontSize="10"
+                                            <TextBlock Text="{Binding TagText, Converter={StaticResource LocText}}" FontSize="10"
                                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                         </Border>
                                     </local:FollowTagPanel>

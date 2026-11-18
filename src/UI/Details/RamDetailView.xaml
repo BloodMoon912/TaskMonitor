@@ -4,11 +4,13 @@
              xmlns:ikw="http://schemas.inkore.net/lib/ui/wpf"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
              xmlns:local="clr-namespace:task_monitor"
+             xmlns:loc="clr-namespace:task_monitor.Localization"
              xmlns:fluent="clr-namespace:FluentWpfCore.Controls;assembly=FluentWpfCore"
              Background="Transparent">
 
     <UserControl.Resources>
         <local:BytesToSizeConverter x:Key="BytesToSize" />
+        <loc:LocTextConverter x:Key="LocText" />
     </UserControl.Resources>
 
     <ikw:SimpleStackPanel Spacing="12">
@@ -20,7 +22,7 @@
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                 <ui:FontIcon FontSize="24" VerticalAlignment="Center" Margin="0,3,8,0"
                              Icon="{x:Static ui:FluentSystemIcons.Memory_16_Regular}" />
-                <TextBlock Text="内存" FontSize="22"
+                <TextBlock Text="{loc:Tr detail.ram.title}" FontSize="22"
                            VerticalAlignment="Center" />
                 <ContentControl x:Name="PinSlotHost" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
@@ -39,60 +41,60 @@
             <local:MemoryCompositionBar x:Name="CompositionBar" Height="10" />
         </Border>
 
-        <!-- Task Manager memory breakdown (使用中/已压缩, 已提交, 可用, 已缓存, 分页/非分页缓冲池) -->
-        <ikw:SimpleStackPanel Spacing="8" Margin="0,2,0,0">
+        <!-- Task Manager memory breakdown (使用中/已壓縮, 已提交, 可用, 已快取, 分頁/非分頁集區),
+             in the stat-grid convention every detail page shares: two equal columns, one quantity
+             per cell, label secondary / value primary, TextWrapping="Wrap" so the 字體大小 setting
+             cannot push a value into the neighbouring cell (a three-column row clipped 分頁集區
+             outright at 360 DIP). -->
+        <Grid Margin="0,2,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-            <!-- Row 1 (full width): 使用中(已压缩)  16.6 GB (1.0 GB) -->
-            <TextBlock FontSize="12">
-                <Run Text="使用中(已压缩)：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            <!-- Row 0: 使用中(已壓縮) | 可用 -->
+            <TextBlock Grid.Row="0" Grid.Column="0" FontSize="12" TextWrapping="Wrap" Margin="0,0,8,8">
+                <Run Text="{loc:Tr detail.ram.label.inuse}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <Run x:Name="InUseValueRun" Text="—" />
             </TextBlock>
+            <TextBlock Grid.Row="0" Grid.Column="1" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8">
+                <Run Text="{loc:Tr detail.ram.label.available}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run x:Name="AvailableValueRun" Text="—" />
+            </TextBlock>
 
-            <!-- Row 2: 可用 | 已提交  (left col matches a row-3 column so 已提交 aligns under 分页池) -->
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="2*" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" FontSize="12">
-                    <Run Text="可用：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Run x:Name="AvailableValueRun" Text="—" />
-                </TextBlock>
-                <TextBlock Grid.Column="1" FontSize="12">
-                    <Run Text="已提交：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Run x:Name="CommittedValueRun" Text="—" />
-                </TextBlock>
-            </Grid>
+            <!-- Row 1: 已提交 | 已快取 -->
+            <TextBlock Grid.Row="1" Grid.Column="0" FontSize="12" TextWrapping="Wrap" Margin="0,0,8,8">
+                <Run Text="{loc:Tr detail.ram.label.committed}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run x:Name="CommittedValueRun" Text="—" />
+            </TextBlock>
+            <TextBlock Grid.Row="1" Grid.Column="1" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8">
+                <Run Text="{loc:Tr detail.ram.label.cached}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run x:Name="CachedValueRun" Text="—" />
+            </TextBlock>
 
-            <!-- Row 3: 已缓存 | 分页池 | 非分页池 -->
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" FontSize="12">
-                    <Run Text="已缓存：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Run x:Name="CachedValueRun" Text="—" />
-                </TextBlock>
-                <TextBlock Grid.Column="1" FontSize="12">
-                    <Run Text="分页池：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Run x:Name="PagedPoolValueRun" Text="—" />
-                </TextBlock>
-                <TextBlock Grid.Column="2" FontSize="12">
-                    <Run Text="非分页池：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Run x:Name="NonPagedPoolValueRun" Text="—" />
-                </TextBlock>
-            </Grid>
-        </ikw:SimpleStackPanel>
+            <!-- Row 2: 分頁集區 | 非分頁集區 -->
+            <TextBlock Grid.Row="2" Grid.Column="0" FontSize="12" TextWrapping="Wrap" Margin="0,0,8,0">
+                <Run Text="{loc:Tr detail.ram.label.paged-pool}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run x:Name="PagedPoolValueRun" Text="—" />
+            </TextBlock>
+            <TextBlock Grid.Row="2" Grid.Column="1" FontSize="12" TextWrapping="Wrap">
+                <Run Text="{loc:Tr detail.ram.label.nonpaged-pool}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run x:Name="NonPagedPoolValueRun" Text="—" />
+            </TextBlock>
+        </Grid>
 
         <!-- Per-process memory list (private working set — same source as Task Manager) -->
         <Border Background="Transparent" BorderThickness="0" Padding="0,4">
             <ikw:SimpleStackPanel Spacing="6">
                 <Grid>
-                    <TextBlock Text="高占用进程" FontSize="12"
+                    <TextBlock Text="{loc:Tr common.top-processes}" FontSize="12"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Text="内存" FontSize="12" HorizontalAlignment="Right"
+                    <TextBlock Text="{loc:Tr detail.ram.top-processes.usage}" FontSize="12" HorizontalAlignment="Right"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 </Grid>
                 <!-- Fixed height so the window (SizeToContent=Height) stays stable across
@@ -130,7 +132,7 @@
                                                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                                                 BorderThickness="1"
                                                 Visibility="{Binding TagVisibility}">
-                                            <TextBlock Text="{Binding TagText}" FontSize="10"
+                                            <TextBlock Text="{Binding TagText, Converter={StaticResource LocText}}" FontSize="10"
                                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                         </Border>
                                     </local:FollowTagPanel>

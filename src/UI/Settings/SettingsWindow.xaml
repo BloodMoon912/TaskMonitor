@@ -5,8 +5,9 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
         xmlns:local="clr-namespace:task_monitor"
+        xmlns:loc="clr-namespace:task_monitor.Localization"
         mc:Ignorable="d"
-        Title="设置"
+        Title="{loc:Tr settings.window.title}"
         Width="1040" Height="720"
         MinWidth="560" MinHeight="480"
         WindowStartupLocation="CenterScreen"
@@ -56,17 +57,17 @@
                            IsTitleBarAutoPaddingEnabled="False"
                            SelectionChanged="NavView_SelectionChanged">
             <ui:NavigationView.MenuItems>
-                <ui:NavigationViewItem x:Name="NavGeneral" Content="通用" IsSelected="True">
+                <ui:NavigationViewItem x:Name="NavGeneral" Content="{loc:Tr settings.nav.general}" IsSelected="True">
                     <ui:NavigationViewItem.Icon>
                         <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Options_20_Regular}" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
-                <ui:NavigationViewItem x:Name="NavAppearance" Content="外观">
+                <ui:NavigationViewItem x:Name="NavAppearance" Content="{loc:Tr settings.nav.appearance}">
                     <ui:NavigationViewItem.Icon>
                         <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.PaintBrush_20_Regular}" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
-                <ui:NavigationViewItem x:Name="NavSampling" Content="采样项目">
+                <ui:NavigationViewItem x:Name="NavSampling" Content="{loc:Tr settings.nav.sampling}">
                     <ui:NavigationViewItem.Icon>
                         <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Gauge_20_Regular}" />
                     </ui:NavigationViewItem.Icon>
@@ -77,7 +78,7 @@
                  scrollable category list; selection flows through the same
                  NavView_SelectionChanged as the categories above. -->
             <ui:NavigationView.FooterMenuItems>
-                <ui:NavigationViewItem x:Name="NavAbout" Content="关于">
+                <ui:NavigationViewItem x:Name="NavAbout" Content="{loc:Tr settings.nav.about}">
                     <ui:NavigationViewItem.Icon>
                         <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Info_20_Regular}" />
                     </ui:NavigationViewItem.Icon>
@@ -111,9 +112,9 @@
                     </local:TouchDragScrollViewer.Physics>
                     <StackPanel Margin="44,0,44,32">
 
-                        <TextBlock Style="{StaticResource PageTitleStyle}" Text="通用" />
+                        <TextBlock Style="{StaticResource PageTitleStyle}" Text="{loc:Tr settings.nav.general}" />
 
-                        <ui:SettingsCard Header="开机自启"
+                        <ui:SettingsCard Header="{loc:Tr settings.general.autostart.title}"
                                          Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Rocket_20_Regular}" />
@@ -121,37 +122,21 @@
                             <ui:ToggleSwitch x:Name="AutoStartSwitch" Toggled="AutoStartSwitch_Toggled" />
                         </ui:SettingsCard>
 
-                        <ui:SettingsCard Header="采样间隔"
+                        <ui:SettingsCard Header="{loc:Tr settings.general.interval.title}"
                                          Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Timer_20_Regular}" />
                             </ui:SettingsCard.HeaderIcon>
                             <ComboBox x:Name="IntervalCombo" MinWidth="140" SelectionChanged="IntervalCombo_SelectionChanged">
-                                <ComboBoxItem Content="0.5 秒" />
-                                <ComboBoxItem Content="1 秒（默认）" />
-                                <ComboBoxItem Content="2 秒" />
+                                <ComboBoxItem Content="{loc:Tr settings.general.interval.half-second}" />
+                                <ComboBoxItem Content="{loc:Tr settings.general.interval.one-second}" />
+                                <ComboBoxItem Content="{loc:Tr settings.general.interval.two-seconds}" />
                             </ComboBox>
                         </ui:SettingsCard>
 
-                        <!-- 检查更新: takes effect on the NEXT startup (the check runs once per
-                             launch); off also disables the 更新源 picker inside. -->
-                        <ui:SettingsExpander Header="检查更新"
-                                             IsExpanded="True"
-                                             Description="启动时检测是否有新版本。"
-                                             Margin="0,0,0,4">
-                            <ui:SettingsExpander.HeaderIcon>
-                                <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.ArrowSync_20_Regular}" />
-                            </ui:SettingsExpander.HeaderIcon>
-                            <ui:ToggleSwitch x:Name="UpdateCheckSwitch" Toggled="UpdateCheckSwitch_Toggled" />
-                            <ui:SettingsExpander.Items>
-                                <ui:SettingsCard Header="更新源">
-                                    <ComboBox x:Name="UpdateSourceCombo" MinWidth="140" SelectionChanged="UpdateSourceCombo_SelectionChanged">
-                                        <ComboBoxItem Content="CNB" />
-                                        <ComboBoxItem Content="GitHub" />
-                                    </ComboBox>
-                                </ui:SettingsCard>
-                            </ui:SettingsExpander.Items>
-                        </ui:SettingsExpander>
+                        <!-- 检查更新 / 更新源 were REMOVED (user request 2026-11-18: the fork is
+                             self-managed and the startup check was dead weight). UpdateChecker and
+                             UpdateAvailableDialog are gone with it; nothing runs at startup. -->
 
                     </StackPanel>
                 </local:TouchDragScrollViewer>
@@ -167,17 +152,17 @@
                     </local:TouchDragScrollViewer.Physics>
                     <StackPanel Margin="44,0,44,32">
 
-                        <TextBlock Style="{StaticResource PageTitleStyle}" Text="外观" />
+                        <TextBlock Style="{StaticResource PageTitleStyle}" Text="{loc:Tr settings.nav.appearance}" />
 
-                        <ui:SettingsCard Header="主题"
+                        <ui:SettingsCard Header="{loc:Tr settings.appearance.theme.title}"
                                          Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Color_20_Regular}" />
                             </ui:SettingsCard.HeaderIcon>
                             <ComboBox x:Name="ThemeCombo" MinWidth="140" SelectionChanged="ThemeCombo_SelectionChanged">
-                                <ComboBoxItem Content="跟随系统" />
-                                <ComboBoxItem Content="浅色" />
-                                <ComboBoxItem Content="深色" />
+                                <ComboBoxItem Content="{loc:Tr settings.appearance.theme.system}" />
+                                <ComboBoxItem Content="{loc:Tr settings.appearance.theme.light}" />
+                                <ComboBoxItem Content="{loc:Tr settings.appearance.theme.dark}" />
                             </ComboBox>
                         </ui:SettingsCard>
 
@@ -186,19 +171,19 @@
                              On the classical (Win10) taskbar 靠左位置 does not exist, so the
                              expander would be a chevron opening onto nothing — the ctor hides it
                              and uses OnLeftCard below instead. -->
-                        <ui:SettingsExpander x:Name="OnLeftExpander" Header="靠左显示"
+                        <ui:SettingsExpander x:Name="OnLeftExpander" Header="{loc:Tr settings.appearance.on-left.title}"
                                              IsExpanded="True"
-                                             Description="显示在任务栏左侧（竖直任务栏为顶部；任务栏左对齐时自动回退到另一侧）。"
+                                             Description="{loc:Tr settings.appearance.on-left.desc}"
                                              Margin="0,0,0,4">
                             <ui:SettingsExpander.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.PanelLeft_20_Regular}" />
                             </ui:SettingsExpander.HeaderIcon>
                             <ui:ToggleSwitch x:Name="OnLeftSwitch" Toggled="OnLeftSwitch_Toggled" />
                             <ui:SettingsExpander.Items>
-                                <ui:SettingsCard Header="靠左位置">
+                                <ui:SettingsCard Header="{loc:Tr settings.appearance.on-left.position.title}">
                                     <ComboBox x:Name="AnchorCombo" MinWidth="140" SelectionChanged="AnchorCombo_SelectionChanged">
-                                        <ComboBoxItem Content="任务栏最左端" />
-                                        <ComboBoxItem Content="贴近开始按钮" />
+                                        <ComboBoxItem Content="{loc:Tr settings.appearance.on-left.position.edge}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.appearance.on-left.position.start}" />
                                     </ComboBox>
                                 </ui:SettingsCard>
                             </ui:SettingsExpander.Items>
@@ -210,14 +195,14 @@
                              onto nothing. The ctor moves the expander's icon and its ToggleSwitch
                              in here, so the switch exists exactly once and both forms share one
                              piece of state. -->
-                        <ui:SettingsCard x:Name="OnLeftCard" Header="靠左显示"
-                                         Description="显示在任务栏靠开始按钮的一端（竖直任务栏为顶部）。"
+                        <ui:SettingsCard x:Name="OnLeftCard" Header="{loc:Tr settings.appearance.on-left.title}"
+                                         Description="{loc:Tr settings.appearance.on-left.legacy.desc}"
                                          Visibility="Collapsed"
                                          Margin="0,0,0,4" />
 
-                        <ui:SettingsExpander x:Name="DisplayExpander" Header="任务栏显示器"
+                        <ui:SettingsExpander x:Name="DisplayExpander" Header="{loc:Tr settings.appearance.displays.title}"
                                              IsExpanded="True"
-                                             Description="选择要同时显示任务栏窗口的显示器，至少保留一项。副屏需开启 Windows 的“在所有显示器上显示任务栏”。"
+                                             Description="{loc:Tr settings.appearance.displays.desc}"
                                              Margin="0,0,0,4">
                             <ui:SettingsExpander.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.WindowMultiple_20_Regular}" />
@@ -229,8 +214,8 @@
                              grid row and two-line block. The switch is live: the overlay re-lays
                              out and resizes the moment it flips. Applies to both forms, so it is a
                              plain card, never gated on 悬浮模式. -->
-                        <ui:SettingsCard Header="紧凑模式"
-                                         Description="收紧任务栏与悬浮窗中各项目之间的间距。"
+                        <ui:SettingsCard Header="{loc:Tr settings.appearance.compact.title}"
+                                         Description="{loc:Tr settings.appearance.compact.desc}"
                                          Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.TextColumnOneNarrow_20_Regular}" />
@@ -238,8 +223,8 @@
                             <ui:ToggleSwitch x:Name="CompactSwitch" Toggled="CompactSwitch_Toggled" />
                         </ui:SettingsCard>
 
-                        <ui:SettingsCard Header="显示分割线"
-                                         Description="在任务栏窗口与悬浮窗的各采样项目之间显示分割线。"
+                        <ui:SettingsCard Header="{loc:Tr settings.appearance.separators.title}"
+                                         Description="{loc:Tr settings.appearance.separators.desc}"
                                          Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.DividerTall_20_Regular}" />
@@ -247,14 +232,14 @@
                             <ui:ToggleSwitch x:Name="ShowSeparatorsSwitch" Toggled="ShowSeparatorsSwitch_Toggled" />
                         </ui:SettingsCard>
 
-                        <ui:SettingsExpander x:Name="ItemOrderExpander" Header="项目顺序"
+                        <ui:SettingsExpander x:Name="ItemOrderExpander" Header="{loc:Tr settings.appearance.order.title}"
                                              IsExpanded="True"
-                                             Description="拖动下方项目，调整任务栏窗口与悬浮窗的显示顺序；关闭采样的项目也会保留。"
+                                             Description="{loc:Tr settings.appearance.order.desc}"
                                              Margin="0,0,0,4">
                             <ui:SettingsExpander.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.ReOrder_20_Regular}" />
                             </ui:SettingsExpander.HeaderIcon>
-                            <Button Content="恢复默认" Click="ResetItemOrder_Click" />
+                            <Button Content="{loc:Tr settings.appearance.order.reset}" Click="ResetItemOrder_Click" />
                         </ui:SettingsExpander>
 
                         <!-- 悬浮模式: the overlay leaves the taskbar entirely and lives on the
@@ -262,20 +247,20 @@
                              Its five sub-settings (置顶显示 / 允许越界 / 贴边隐藏 / 全屏时隐藏 / 透明度) are items
                              inside, enabled only while the mode is on — the same shape as
                              靠左显示/靠左位置 above. -->
-                        <ui:SettingsExpander x:Name="FloatingExpander" Header="悬浮模式"
+                        <ui:SettingsExpander x:Name="FloatingExpander" Header="{loc:Tr settings.appearance.floating.title}"
                                              IsExpanded="True"
-                                             Description="从任务栏脱离开来，作为可拖动的悬浮窗显示（任务栏上不再显示）。"
+                                             Description="{loc:Tr settings.appearance.floating.desc}"
                                              Margin="0,0,0,4">
                             <ui:SettingsExpander.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.WindowMultiple_20_Regular}" />
                             </ui:SettingsExpander.HeaderIcon>
                             <ui:ToggleSwitch x:Name="FloatingSwitch" Toggled="FloatingSwitch_Toggled" />
                             <ui:SettingsExpander.Items>
-                                <ui:SettingsCard x:Name="FloatingTopmostCard" Header="置顶显示">
+                                <ui:SettingsCard x:Name="FloatingTopmostCard" Header="{loc:Tr settings.appearance.floating.topmost}">
                                     <ui:ToggleSwitch x:Name="FloatingTopmostSwitch" Toggled="FloatingTopmostSwitch_Toggled" />
                                 </ui:SettingsCard>
-                                <ui:SettingsCard x:Name="FloatingOutOfBoundsCard" Header="允许超出屏幕边界"
-                                                 Description="允许把悬浮窗拖到屏幕边缘之外；关闭时会立即拉回工作区。">
+                                <ui:SettingsCard x:Name="FloatingOutOfBoundsCard" Header="{loc:Tr settings.appearance.floating.out-of-bounds}"
+                                                 Description="{loc:Tr settings.appearance.floating.out-of-bounds.desc}">
                                     <ui:ToggleSwitch x:Name="FloatingOutOfBoundsSwitch" Toggled="FloatingOutOfBoundsSwitch_Toggled" />
                                 </ui:SettingsCard>
                                 <!-- 贴边隐藏: drag the widget onto the 左/右/上 screen edge and it
@@ -283,8 +268,8 @@
                                      pops it back out and the mouse leaving folds it away again. The
                                      dock is derived from the widget's saved home, so turning this on
                                      while the widget sits at an edge hides it immediately. -->
-                                <ui:SettingsCard x:Name="FloatingEdgeHideCard" Header="贴边隐藏"
-                                                 Description="拖到屏幕左、右或上边缘时自动收起，只留一条窄边；鼠标移到窄边上会自动弹出，移开后自动收起。">
+                                <ui:SettingsCard x:Name="FloatingEdgeHideCard" Header="{loc:Tr settings.appearance.floating.edge-hide}"
+                                                 Description="{loc:Tr settings.appearance.floating.edge-hide.desc}">
                                     <ui:ToggleSwitch x:Name="FloatingEdgeHideSwitch" Toggled="FloatingEdgeHideSwitch_Toggled" />
                                 </ui:SettingsCard>
                                 <!-- 全屏时隐藏: the widget disappears while a FULLSCREEN app is in
@@ -292,8 +277,8 @@
                                      slideshow) and comes back when the foreground stops being
                                      fullscreen. Maximized windows don't count — only真 fullscreen
                                      covers the whole monitor; a hidden widget keeps sampling. -->
-                                <ui:SettingsCard x:Name="FloatingFullscreenHideCard" Header="全屏时隐藏"
-                                                 Description="前台应用全屏时（如游戏、全屏视频）自动隐藏悬浮窗，退出全屏后自动恢复；最大化的窗口不会触发。">
+                                <ui:SettingsCard x:Name="FloatingFullscreenHideCard" Header="{loc:Tr settings.appearance.floating.fullscreen-hide}"
+                                                 Description="{loc:Tr settings.appearance.floating.fullscreen-hide.desc}">
                                     <ui:ToggleSwitch x:Name="FloatingFullscreenHideSwitch" Toggled="FloatingFullscreenHideSwitch_Toggled" />
                                 </ui:SettingsCard>
                                 <!-- 透明度: BACKGROUND-only — the card's alpha IS this value (100% =
@@ -302,8 +287,8 @@
                                      透明度). Slider in whole percents, 20 floor. Live while dragging
                                      (the widget re-tints per step; the yaml write is debounced in
                                      App); percent readout beside the thumb. -->
-                                <ui:SettingsCard x:Name="FloatingOpacityCard" Header="透明度"
-                                                 Description="调节悬浮窗背景的不透明度（文字不受影响，最低 20%）。">
+                                <ui:SettingsCard x:Name="FloatingOpacityCard" Header="{loc:Tr settings.appearance.floating.opacity}"
+                                                 Description="{loc:Tr settings.appearance.floating.opacity.desc}">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock x:Name="FloatingOpacityText" Text="100%"
                                                    VerticalAlignment="Center" MinWidth="36" TextAlignment="Right"
@@ -332,7 +317,7 @@
                     </local:TouchDragScrollViewer.Physics>
                     <StackPanel Margin="44,0,44,32">
 
-                        <TextBlock Style="{StaticResource PageTitleStyle}" Text="采样项目" />
+                        <TextBlock Style="{StaticResource PageTitleStyle}" Text="{loc:Tr settings.nav.sampling}" />
 
                         <!-- One card per metric; the toggle enables/disables that metric's
                              sampling entirely (off = the metric is hidden from the taskbar
@@ -344,8 +329,8 @@
 
                         <!-- Section-wide option for the five detail views' process lists — first
                              in the section (not a per-metric switch, so a plain card). -->
-                        <ui:SettingsCard Header="合并相同程序"
-                                         Description="在进程列表中合并相同程序所创建的进程。"
+                        <ui:SettingsCard Header="{loc:Tr settings.sampling.merge.title}"
+                                         Description="{loc:Tr settings.sampling.merge.desc}"
                                          Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Merge_20_Regular}" />
@@ -360,14 +345,14 @@
                             <ui:ToggleSwitch x:Name="CpuSwitch" Tag="0" Toggled="MetricSwitch_Toggled" />
                         </ui:SettingsCard>
 
-                        <ui:SettingsCard Header="内存" Margin="0,0,0,4">
+                        <ui:SettingsCard Header="{loc:Tr settings.sampling.ram.title}" Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Memory_16_Regular}" />
                             </ui:SettingsCard.HeaderIcon>
                             <ui:ToggleSwitch x:Name="RamSwitch" Tag="1" Toggled="MetricSwitch_Toggled" />
                         </ui:SettingsCard>
 
-                        <ui:SettingsExpander Header="磁盘" IsExpanded="True" Margin="0,0,0,4">
+                        <ui:SettingsExpander Header="{loc:Tr settings.sampling.disk.title}" IsExpanded="True" Margin="0,0,0,4">
                             <ui:SettingsExpander.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.HardDrive_20_Regular}" />
                             </ui:SettingsExpander.HeaderIcon>
@@ -376,14 +361,14 @@
                                 <!-- 显示方式: what the headline (overlay slot + detail chart) shows.
                                      特定磁盘 enables the disk picker below it (same pattern as
                                      靠左显示 → 靠左位置). -->
-                                <ui:SettingsCard Header="显示方式">
+                                <ui:SettingsCard Header="{loc:Tr settings.sampling.disk.mode.title}">
                                     <ComboBox x:Name="DiskDisplayCombo" MinWidth="140" SelectionChanged="DiskDisplayCombo_SelectionChanged">
-                                        <ComboBoxItem Content="所有磁盘平均（默认）" />
-                                        <ComboBoxItem Content="最高利用率" />
-                                        <ComboBoxItem Content="特定磁盘" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.disk.mode.average}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.disk.mode.max}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.disk.mode.specific}" />
                                     </ComboBox>
                                 </ui:SettingsCard>
-                                <ui:SettingsCard x:Name="DiskPickCard" Header="特定磁盘">
+                                <ui:SettingsCard x:Name="DiskPickCard" Header="{loc:Tr settings.sampling.disk.pick.title}">
                                     <ComboBox x:Name="DiskPickCombo" MinWidth="220" SelectionChanged="DiskPickCombo_SelectionChanged" />
                                 </ui:SettingsCard>
                             </ui:SettingsExpander.Items>
@@ -397,14 +382,14 @@
                             <ui:SettingsExpander.Items>
                                 <!-- Same 显示方式 pair as 磁盘's, but the GPU default is 最高利用率
                                      (Task Manager's sidebar rule). -->
-                                <ui:SettingsCard Header="显示方式">
+                                <ui:SettingsCard Header="{loc:Tr settings.sampling.gpu.mode.title}">
                                     <ComboBox x:Name="GpuDisplayCombo" MinWidth="140" SelectionChanged="GpuDisplayCombo_SelectionChanged">
-                                        <ComboBoxItem Content="所有 GPU 平均" />
-                                        <ComboBoxItem Content="最高利用率（默认）" />
-                                        <ComboBoxItem Content="特定 GPU" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.mode.average}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.mode.max}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.mode.specific}" />
                                     </ComboBox>
                                 </ui:SettingsCard>
-                                <ui:SettingsCard x:Name="GpuPickCard" Header="特定 GPU">
+                                <ui:SettingsCard x:Name="GpuPickCard" Header="{loc:Tr settings.sampling.gpu.pick.title}">
                                     <ComboBox x:Name="GpuPickCombo" MinWidth="220" SelectionChanged="GpuPickCombo_SelectionChanged" />
                                 </ui:SettingsCard>
                                 <!-- 任务栏显示: what the taskbar GPU slot shows — the utilization
@@ -412,27 +397,28 @@
                                      as two stacked rows ("GPU 42%" over "GPU 65°C"). The two cards
                                      below only matter while a temperature shows, so they are
                                      enabled-gated on this combo (the DiskPickCombo pattern). -->
-                                <ui:SettingsCard Header="任务栏显示">
+                                <ui:SettingsCard Header="{loc:Tr settings.sampling.gpu.display.title}">
                                     <ComboBox x:Name="GpuContentCombo" MinWidth="150" SelectionChanged="GpuContentCombo_SelectionChanged">
-                                        <ComboBoxItem Content="使用率（默认）" />
-                                        <ComboBoxItem Content="温度" />
-                                        <ComboBoxItem Content="使用率 + 温度" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.display.usage}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.display.temp}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.display.usage-temp}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.display.vram}" />
                                     </ComboBox>
                                 </ui:SettingsCard>
-                                <ui:SettingsCard x:Name="GpuTempPickCard" Header="温度来源">
+                                <ui:SettingsCard x:Name="GpuTempPickCard" Header="{loc:Tr settings.sampling.gpu.tempsource.title}">
                                     <ComboBox x:Name="GpuTempPickCombo" MinWidth="220" SelectionChanged="GpuTempPickCombo_SelectionChanged" />
                                 </ui:SettingsCard>
-                                <ui:SettingsCard x:Name="GpuTempUnitCard" Header="温度单位"
-                                                 Description="同时作用于任务栏与 GPU 详情弹窗。">
+                                <ui:SettingsCard x:Name="GpuTempUnitCard" Header="{loc:Tr settings.sampling.gpu.tempunit.title}"
+                                                 Description="{loc:Tr settings.sampling.gpu.tempunit.desc}">
                                     <ComboBox x:Name="GpuTempUnitCombo" MinWidth="140" SelectionChanged="GpuTempUnitCombo_SelectionChanged">
-                                        <ComboBoxItem Content="摄氏度（默认）" />
-                                        <ComboBoxItem Content="华氏度" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.tempunit.celsius}" />
+                                        <ComboBoxItem Content="{loc:Tr settings.sampling.gpu.tempunit.fahrenheit}" />
                                     </ComboBox>
                                 </ui:SettingsCard>
                             </ui:SettingsExpander.Items>
                         </ui:SettingsExpander>
 
-                        <ui:SettingsExpander Header="网络" IsExpanded="True" Margin="0,0,0,4">
+                        <ui:SettingsExpander Header="{loc:Tr settings.sampling.net.title}" IsExpanded="True" Margin="0,0,0,4">
                             <ui:SettingsExpander.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Globe_20_Regular}" />
                             </ui:SettingsExpander.HeaderIcon>
@@ -442,7 +428,7 @@
                                      adapter (incl. virtual ones — an explicit pick is how the user
                                      watches a VPN; a missing pick falls back to 自动). Items are
                                      built in code from the adapter enumeration. -->
-                                <ui:SettingsCard Header="适配器">
+                                <ui:SettingsCard Header="{loc:Tr settings.sampling.net.adapter.title}">
                                     <ComboBox x:Name="NetAdapterCombo" MinWidth="260" SelectionChanged="NetAdapterCombo_SelectionChanged" />
                                 </ui:SettingsCard>
                                 <!-- 公网 IP lookup: the Network detail panel's 公网 IPv4/IPv6 cells
@@ -450,9 +436,9 @@
                                      sends nothing to the public internet (the cells show "—" / the
                                      v6 row collapses); the LAN-only 本地延迟 ping is unaffected.
                                      Reports immediately. -->
-                                <ui:SettingsCard Header="公网 IP"
-                                                 Description="查询公网 IPv4 / IPv6 地址并探测公网延迟。">
-                                    <ui:ToggleSwitch x:Name="PublicIpSwitch" OnContent="启用" OffContent="关闭"
+                                <ui:SettingsCard Header="{loc:Tr settings.sampling.net.public-ip.title}"
+                                                 Description="{loc:Tr settings.sampling.net.public-ip.desc}">
+                                    <ui:ToggleSwitch x:Name="PublicIpSwitch" OnContent="{loc:Tr common.toggle.on}" OffContent="{loc:Tr common.toggle.off}"
                                                      Toggled="PublicIpSwitch_Toggled" />
                                 </ui:SettingsCard>
                                 <!-- Clash/Mihomo integration: the core's proxied per-process traffic
@@ -460,9 +446,9 @@
                                      (ClashSampler). Switch reports immediately, text edits debounced
                                      (500ms); 测试连接 probes the CURRENT box contents via GET /version. -->
                                 <ui:SettingsCard Header="Clash / Mihomo"
-                                                 Description="从代理内核同步实时网速至进程列表。">
+                                                 Description="{loc:Tr settings.sampling.net.clash.desc}">
                                     <StackPanel>
-                                        <ui:ToggleSwitch x:Name="ClashSwitch" OnContent="启用" OffContent="关闭"
+                                        <ui:ToggleSwitch x:Name="ClashSwitch" OnContent="{loc:Tr common.toggle.on}" OffContent="{loc:Tr common.toggle.off}"
                                                          Toggled="ClashSwitch_Toggled" />
                                         <!-- Fixed Width, NOT MinWidth: the card template's content column
                                              is Auto, so a single-line TextBox measures to its full text
@@ -472,13 +458,13 @@
                                              measures with infinite width, so TextWrapping alone is a
                                              no-op without MaxWidth). -->
                                         <TextBox x:Name="ClashAddressBox" Width="320" Margin="0,8,0,0"
-                                                 ui:ControlHelper.PlaceholderText="控制器地址（留空默认 127.0.0.1:9090）"
+                                                 ui:ControlHelper.PlaceholderText="{loc:Tr settings.sampling.net.clash.address.hint}"
                                                  TextChanged="ClashApiBox_TextChanged" />
                                         <TextBox x:Name="ClashSecretBox" Width="320" Margin="0,6,0,0"
-                                                 ui:ControlHelper.PlaceholderText="API 密钥（可选）"
+                                                 ui:ControlHelper.PlaceholderText="{loc:Tr settings.sampling.net.clash.secret.hint}"
                                                  TextChanged="ClashApiBox_TextChanged" />
                                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                            <Button x:Name="ClashTestButton" Content="测试连接"
+                                            <Button x:Name="ClashTestButton" Content="{loc:Tr settings.sampling.net.clash.test}"
                                                     Click="ClashTestButton_Click" />
                                             <TextBlock x:Name="ClashTestResult" VerticalAlignment="Center"
                                                        Margin="10,0,0,0" FontSize="12" MaxWidth="240"
@@ -645,7 +631,7 @@
                                  rides the newest sample; its pulse is render-thread only. -->
                             <StackPanel x:Name="LiveBand" Width="400" Margin="0,30,0,0" Visibility="Collapsed">
                                 <Grid Margin="0,0,0,6">
-                                    <TextBlock Text="实时 CPU" FontSize="12"
+                                    <TextBlock Text="{loc:Tr settings.about.live-cpu}" FontSize="12"
                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                     <TextBlock x:Name="LiveCpuText" FontSize="12" FontWeight="SemiBold"
                                                HorizontalAlignment="Right" />
@@ -698,12 +684,12 @@
                                 <Button Margin="12,0,0,0" Click="AcknowledgementsCard_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Heart_20_Regular}" FontSize="16" />
-                                        <TextBlock Text="参考 / 致谢 / 开源许可" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                        <TextBlock Text="{loc:Tr settings.about.credits}" Margin="8,0,0,0" VerticalAlignment="Center" />
                                     </StackPanel>
                                 </Button>
                             </StackPanel>
 
-                            <TextBlock Text="Copyright © 2026 双霖（LineSoft）" FontSize="12"
+                            <TextBlock Text="{loc:Tr settings.about.copyright}" FontSize="12"
                                        HorizontalAlignment="Center" Margin="0,28,0,0"
                                        Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
                         </StackPanel>
@@ -724,7 +710,7 @@
              title, Win11-Settings style. -->
         <Border Height="46" VerticalAlignment="Top" Background="Transparent"
                 Margin="48,0,0,0">
-            <TextBlock Text="设置"
+            <TextBlock Text="{loc:Tr settings.window.title}"
                        Style="{DynamicResource CaptionTextBlockStyle}"
                        Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                        VerticalAlignment="Center"

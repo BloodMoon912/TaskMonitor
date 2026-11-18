@@ -19,17 +19,15 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## What this is
 
-A Windows taskbar widget: a self-drawn taskbar overlay (default CPU/内存, 磁盘/GPU, 网络 ↑/↓;
-外观 → 项目顺序 reorders; GPU 任务栏显示 = 使用率/温度/两者) that pops up a fluent acrylic detail
-window on click. WPF on .NET
-Framework 4.8. **No main window**; the only persistent UI is that overlay — optionally detached
-into a free-floating card widget (设置 → 外观 → 悬浮模式, gotchas §36). The process stays alive via
-`ShutdownMode="OnExplicitShutdown"`; exit is via the overlay's right-click menu.
+A Windows taskbar widget: a self-drawn overlay (default CPU/内存, 磁盘/GPU, 网络 ↑/↓; 外观 → 项目顺序
+reorders and switches metrics on) that pops up a fluent acrylic detail window on click. WPF on .NET Framework 4.8. **No main window**; the only persistent UI is that overlay —
+optionally detached into a free-floating card (设置 → 外观 → 悬浮模式, gotchas §36). Life is kept by
+`ShutdownMode="OnExplicitShutdown"`; exit via the overlay's right-click menu.
 
 ## Build & run
 
 ```shell
-dotnet build -c Debug          # only toolchain on this machine — no VS MSBuild / nuget.exe
+dotnet build -c Debug          # only toolchain here — no VS MSBuild / nuget.exe
 bin\Debug\net48\task_monitor.exe
 ```
 
@@ -46,15 +44,12 @@ bin/Debug/net48/task_monitor.exe &
 ```
 
 The app always runs **elevated and self-managed**; relaunching from an unelevated shell pops a UAC
-prompt on the secure desktop — that one step is the user's. Elevation gate and single-instance
-mutex: `docs/architecture.md`.
+prompt on the secure desktop — that one step is the user's. Elevation gate + mutex: `docs/architecture.md`.
 
-**UI testing is the USER's job — all of it, not just screenshots.** That includes driving the real
-windows (UI Automation, synthetic clicks/drags), screen capture with pixel/colour analysis, and
-every judgement about how something looks, animates or feels. The agent's loop is: implement →
-`dotnet build` → launch → verify from the **log file and `settings.yaml`** (plus code reading) →
-hand the user a short checklist of what to click → wait for their feedback. Do NOT write or run
-UI-test harnesses of your own; when something is only observable through the UI, say so and ask.
+**UI testing is the USER's job — all of it, not just screenshots.** Driving the real windows (UI Automation, clicks/drags), screen capture with pixel analysis, and every judgement about how it looks or feels. The agent's loop: implement → `dotnet build` → launch → verify from the
+**log file and `settings.yaml`** (plus code reading) → hand the user a short checklist → wait for
+their feedback. Do NOT write UI-test harnesses of your own; when something is only observable
+through the UI, say so and ask.
 
 **Git is READ-ONLY for the agent unless the user asks for a commit in that very turn.** No `git
 commit` / `--amend` / `push` / `tag` / `reset` without an explicit request — do the work, leave it in
@@ -62,36 +57,37 @@ the working tree, and say it is uncommitted. "Finish the change" (including the 
 [Maintaining this file](#maintaining-this-file)) means *editing* the files, never committing them.
 
 **Editing files here: the shell is Windows PowerShell 5.1 and it is NOT text-safe.**
-`Get-Content`/`Set-Content`/`Out-File`/`>` default to the ANSI code page (GBK here) or UTF-16, so
-routing a source file through them **double-encodes it and eats characters** — on 2026-09-22 that
-destroyed 125 lines of `TaskbarWindow.cs`, and the repair cost a full reconstruction because the work
-was uncommitted. **Read and write text ONLY with the UTF-8-safe file tools** (or .NET with an explicit
-UTF-8 encoding — `[IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` is byte-exact, the cmdlet
-defaults are not); keep the shell for processes and paths. Snapshot a file before any bulk rewrite.
-Recovering: a diff against `git HEAD` reveals damage to **HEAD's** lines only, so "not in the archive"
-never proves "we never wrote it".
+`Get-Content`/`Set-Content`/`Out-File`/`>` default to ANSI (GBK here) or UTF-16, so routing a source
+file through them **double-encodes it and eats characters** — on 2026-09-22 it destroyed 125 lines of
+`TaskbarWindow.cs`. **Read and write text ONLY with the UTF-8-safe file tools** (or .NET with explicit
+UTF-8 — `[IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` is byte-exact, the cmdlet defaults are
+not); keep the shell for processes and paths. Snapshot before any bulk rewrite. A diff against
+`git HEAD` reveals damage to **HEAD's** lines only, so "not in the archive" never proves "we never
+wrote it".
 
 ## 发布 / CI/CD
 
-**GitHub 是主仓库，CNB 是镜像。** `origin` = GitHub（SSH），`cnb` = CNB（HTTPS——CNB **不支持 SSH**，认证 = 固定用户名 `cnb` + 访问令牌）。日常只推 `origin`；`.github/workflows/` 两个 workflow 负责同步与发布（细节看 workflow 本身）：
+**`origin` = GitHub，是唯一的真仓库；CNB 镜像与数字签名都可选**——`vars.CNB_REPO` / `secrets.CNB_TOKEN`
+为空时 workflow 整段跳过，fork 的推送不会因缺 secret 变红。机制、凭据优先级与失败模式：
+[`docs/release.md`](docs/release.md)。
 
-- `sync-cnb.yml`（main + v* tag）→ `git-sync` 把代码和 tag **force** 推到 CNB（CNB 是纯镜像，从无独有提交）。
-- `release.yml`（v* tag）→ 校验 tag 与 csproj `<Version>` 一致（不一致直接 fail）→ `dotnet build -c Release` → `gh release create` → `tools/publish-cnb-release.ps1` 建 CNB release 并上传 `task_monitor-<tag>-x64.exe`。Secret `CNB_TOKEN` 需 repo-code + repo-contents 两个读写 scope。
-
-发布 = **先改 `task_monitor.csproj` 的 `<Version>`**（版本号唯一来源——SDK 据它生成
-`AssemblyInformationalVersion`，关于页与更新检测读它），并在 `CHANGELOG.md` 写好该 tag 的
-`## <tag>` 段落（release 文案从这里提取，缺失/为空直接 fail），再 `git tag vX.Y.Z && git
-push origin vX.Y.Z`，之后全自动。CNB 云端集群全是 Linux 节点跑不了 net48 WPF，所以构建放在 GitHub 托管
-Windows runner。`publish-cnb-release.ps1` 的三个坑（勿回退，见脚本注释）：CNB API 必须显式
-`Accept: application/json`；PUT/确认必须走 curl.exe（`System.Uri` 会解码 %2F 导致 500）；保持
-**UTF-8 BOM**（PowerShell 5.1 会按 GBK 误读）。
+发布 = 改 csproj 的 **两个** 属性（`<Version>` 四段数字给 AssemblyVersion/FileVersion；
+`<InformationalVersion>` 带 `-BM` 后缀，关于页与产物名读它）+ `CHANGELOG.md` 写
+`## v<InformationalVersion>` 段落（缺/空直接 fail），再 `git tag v<InformationalVersion> && git
+push origin <tag>`：校验 tag（接受两者之一）→ `tools/pack.ps1`（Release 构建 + `dist/*-x64.exe`
++ `.sha256`）→ 有 `SIGN_PFX_BASE64` 才 `tools/sign.ps1 -Require` 签名并 verify → `gh release create`。
+**签名材料永不进版控**，只经 secret 注入。CNB 是 Linux 节点跑不了 net48 WPF，构建放 GitHub
+Windows runner；`publish-cnb-release.ps1` 三个坑（勿回退）：CNB API 必须显式
+`Accept: application/json`；PUT/确认走 curl.exe（`System.Uri` 会解码 %2F 导致 500）；保持
+**UTF-8 BOM**（PS 5.1 按 GBK 误读）。
 
 ## Architecture (the part that spans files)
 
 **One process: WPF UI + one sampling STA + N overlay STAs.** `SamplingController` owns the only
 `SystemSampler`; `TaskbarOverlayManager` creates one native `TaskbarWindow` per selected display,
-each with its own `RenderState`, DirectN pipeline and `SetParent` target. Layout still has 5 hit
-slots and two taskbar families plus side-docked forms; floating mode remains a SINGLE window.
+each with its own `RenderState`, DirectN pipeline and `SetParent` target. Layout has 8 hit SLOTS (0 CPU使用率 1 記憶體
+2 磁碟 3 GPU使用率 4 網路 5 CPU溫度 6 GPU溫度 7 GPU顯存) folded onto 5 detail columns;
+floating mode stays a SINGLE window.
 The WPF thread owns detail/settings/menu windows.
 
 **Single source of truth:** controller publishes one snapshot; overlays redraw it independently,
@@ -102,13 +98,12 @@ pinned-mode invariants: `docs/architecture.md`; the 设置→sampler chains: `do
 
 ## Project layout (layered, under src/)
 
-All source is under `src/`, grouped **by layer** (`App.*` · `Logger` · `AppSettings` ·
-`VersionInfo` · `UpdateChecker` · `StartupTask` at the top, then `Sampling/` · `Interop/` · `UI/`
-with its `Common/` `Details/` `Charts/` `Settings/`); the annotated tree is in
-`docs/architecture.md`. Everything else root-level is build plumbing (csproj, slnx, bin/, obj/,
-FodyWeavers.xml); `assets/` holds `logo.*` and the README banner. All files share the single
-`task_monitor` namespace — folders are physical only, so XAML `x:Class`/`xmlns:local` never
-reference a folder.
+All source is under `src/`, grouped **by layer** (top-level `App.*` · `Logger` · `AppSettings` ·
+`VersionInfo` · `StartupTask`, then `Sampling/` · `Interop/` · `UI/` with
+`Common/` `Details/` `Charts/` `Settings/`); annotated tree: `docs/architecture.md`. Root-level rest
+is build plumbing (csproj, slnx, bin/, obj/, FodyWeavers.xml); `assets/` holds `logo.*` + the README
+banner. One `task_monitor` namespace — folders are physical only, so XAML `x:Class`/`xmlns:local`
+never reference a folder.
 
 **App.xaml under `src/`** needs the explicit `<Page Remove>` + `<ApplicationDefinition Include>`
 pair in the csproj — it must stay, or the build loses `Main`.
@@ -121,18 +116,17 @@ cards), and one row in `docs/settings-plumbing.md`.
 ## Fluent 2 / iNKORE.UI.WPF.Modern design guidelines
 
 All WPF UI targets **Fluent 2**; before adding any control/layout/icon/interaction, **first check
-whether iNKORE.UI.WPF.Modern ships a component for it**. Local checkouts (use these first):
-`D:\ai-ref\UI.WPF.Modern` (source + samples), `D:\ai-ref\Documentation`. The project tracks NuGet
-**0.10.2.1** and the checkout matches — beware version drift. Quirks, each documented at its site:
+whether iNKORE.UI.WPF.Modern ships one**. Local checkouts (use these): `D:\ai-ref\UI.WPF.Modern`
+(source + samples), `D:\ai-ref\Documentation`. NuGet is **0.10.2.1** and matches — beware drift.
+Quirks, documented at each site:
 TabControl's strip "+" and per-tab "×" default VISIBLE; plain switchers use
 `TabControlPivotStyle`/`TabItemPivotStyle` (the default is an opaque TabView lookalike, wrong on
-acrylic); the Pivot hit-test flaw (invisible PreviousButton swallows first-tab clicks) needs
-`PivotNavButtonFix.Apply`.
+acrylic); the Pivot hit-test flaw needs `PivotNavButtonFix.Apply`.
 
 **Window families — never mix iNKORE's `UseModernWindowStyle`/`SystemBackdropType` with
 FluentWpfCore on the same window:** DetailWindow = borderless FluentWpfCore acrylic (Win10
 carve-out: no material, `AllowsTransparency` layered window + self-drawn rounded tint card — §40);
-SettingsWindow = iNKORE modern window + Mica; ConsentDialog/UpdateAvailableDialog = iNKORE modern
+SettingsWindow = iNKORE modern window + Mica; ConsentDialog = iNKORE modern
 window (plain). iNKORE also styles the taskbar right-click menu
 (standard `ContextMenu` via `SetResourceReference`, **by key**), not `MenuFlyout` (can't place at the
 cursor; NREs unless owned).
@@ -141,8 +135,8 @@ cursor; NREs unless owned).
 
 The "don't regress" index. **Full unwinding of every entry — the incident, the measurements, the
 mechanism — is [`docs/gotchas.md`](docs/gotchas.md), same numbering**; each rule's canonical
-statement is a comment at the code site named there. Companion: [`settings-plumbing.md`](docs/settings-plumbing.md),
-[`scroll-stack.md`](docs/scroll-stack.md).
+statement is a comment at the code site named there. Companions:
+[`settings-plumbing.md`](docs/settings-plumbing.md), [`scroll-stack.md`](docs/scroll-stack.md).
 
 **Taskbar / boot**
 
@@ -155,7 +149,7 @@ statement is a comment at the code site named there. Companion: [`settings-plumb
 7. **`SetWindowPos(HWND_TOPMOST)` no-ops when not foreground** — activate first; `EnsureTopmost` verifies the exstyle bit.
 8. **Acrylic** — FluentWpfCore `UseWindowComposition=True` on every WPF window, never hand-rolled Accent P/Invoke (carve-out: DetailWindow on Win10, §40); the native floating overlay has NO material (§36); the menu host needs `WS_EX_TOOLWINDOW`.
 44. **竖直任务栏与任务栏族无关** — orientation comes ONLY from the target rect's aspect, never `classical`; always use the column grid + tray/top anchor. Thickness selects two-line strip / one-line column / multi-column (`ComputeVerticalLayout` against BAND width, never the rounded window).
-45. **`SetParent` 嵌入任务栏偶发 err=87（跨线程瞬态）** — retry in place (5×250ms), judge by `GetAncestor(GA_PARENT)`, and a failed embed DESTROYS the round (never fall through top-level in parent-relative coords → 屏幕左上角滞留); drain the teardown's WM_QUIT before returning; the tick holds the embed invariant.
+45. **`SetParent` 嵌入任务栏偶发 err=87（跨线程瞬态）** — retry in place (5×250ms), judge by `GetAncestor(GA_PARENT)`; a failed embed DESTROYS the round (never fall through top-level in parent coords → 屏幕左上角滞留); drain the teardown's WM_QUIT; the tick holds the embed invariant.
 46. **多显示器 = one SamplingController + N overlays** — persist monitor interface IDs, never indices/HWNDs; each selected target has its own STA/RenderState/taskbar and cancellable lifecycle, never its own sampler. DWrite = per-HWND ISOLATED factory rooted in RenderState; failed Start aborts cleanly. Detail data comes from controller, placement from CLICKED overlay; floating stays singleton. Full rules: gotchas §46.
 47. **Native overlay STAs are PerMonitorV2; resize must reach the HWND** — compare X/Y + width/height; floating derives DPI/height independently of the primary band; docked hide/peek keeps home DPI (real drag/undock follows live); update region in the same pass. Back-buffer-only resize clips the card.
 
@@ -174,6 +168,8 @@ statement is a comment at the code site named there. Companion: [`settings-plumb
 19. **Scroll stack** — `Style="{DynamicResource {x:Type ScrollViewer}}"` on every scroller, or it silently falls back to the Aero bar.
 20. **Idle GC at event points only** — no timer/burst, `WaitForPendingFinalizers`, or working-set trim (`TrimMemory`: 30 s limit, one plain `GC.Collect`).
 21. **开机自启动 = a logon scheduled task, never the Run key** (XML-registered, not schtasks switches).
+49. **CPU 温度感測包按需載入** — LHM 型別只允許出現在 `Sampling/Sensors/LhmWorker.cs`；別處引用（或放進欄位初始/啟動路徑）就會在啟動時解析內嵌組件，按需設計歸零（gotchas §49）。
+50. **工作列欄寬 = 量測文字，不是常數** — `GroupWidths` 只是 floor；儲備最寬值（`100%`/`212°F`/`999.9 MB/s`）而非即時值（否則每秒重設視窗重嵌），量完由 tick resize、視窗寬取 ceil；同一裝置的使用率+溫度合成一個圖磚（一個標題、兩列數值、整欄可按、不畫中線，gotchas §50–51）。
 
 **UI / theme / settings**
 
@@ -188,7 +184,7 @@ statement is a comment at the code site named there. Companion: [`settings-plumb
 30. **公网 IP off kills ALL public traffic** (lookups + the ICMP probe); the LAN gateway ping is unaffected.
 31. **Clash/Mihomo** — `req.Proxy = null`; rows appended standalone and exempt from merging; `null` endpoint = poller asleep.
 32. **DISPOSE back-buffer wrappers before `ResizeBuffers`** — they live on `RenderState`, never in locals.
-33. **更新检测** — csproj `<Version>` is the only version source; CNB reads the WEB 307 redirect; 不再提醒 skips only that version; an unreachable host (not an HTTP answer) earns ONE retry 5 minutes later, and it re-reads the live config.
+33. **版本号是两个属性** — `<Version>` 四段数字（AssemblyVersion/FileVersion）、`<InformationalVersion>` 带 `-BM` 后缀（关于页 + 产物名）；tag 等于两者之一即可，发布细节见 `docs/release.md`。启动时的更新检测已整套移除（gotchas §33）。
 34. **net48's `Run.Text` is not a dependency property** — a `{Binding}` on a `Run` throws at startup; set named Runs in code.
 
 **Floating widget / rendering / forensics**
@@ -206,13 +202,14 @@ statement is a comment at the code site named there. Companion: [`settings-plumb
 
 ## Useful external references
 
-- iNKORE.UI.WPF.Modern: the local checkouts above; github.com/iNKORE-NET/UI.WPF.Modern.
-- **SRU real-time API:** reversed from `Taskmgr.exe` in `C:\Users\l\SRUM-RealTime-API.md` — the canonical reference for `ProcessNetSampler` / `SrumInterop`.
+- iNKORE.UI.WPF.Modern: local checkouts above; github.com/iNKORE-NET/UI.WPF.Modern.
+- **SRU real-time API:** reversed from `Taskmgr.exe`; `C:\Users\l\SRUM-RealTime-API.md` is canonical
+  for `ProcessNetSampler` / `SrumInterop`.
 
 ## Maintaining this file
 
 **Keep it in sync with the code — update it in the same change, not later.** Stale guidance is worse
-than none; fix or delete any claim that no longer matches the code on the spot.
+than none; fix or delete any claim that no longer matches the code.
 
 **每次更新本文件前，先检查它的体积，整个文件控制在 20 KB 以内。** 加入内容后将超过 20 KB 时，
 要想清楚是否真的需要加入；必须加入的话，精简语序，并考虑是否需要优化（压缩或迁移到 docs/）已有内容。

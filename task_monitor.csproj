@@ -6,14 +6,18 @@
     <RootNamespace>task_monitor</RootNamespace>
     <AssemblyName>task_monitor</AssemblyName>
     <UseWPF>true</UseWPF>
-    <!-- Assembly identity + version info. Version is the SINGLE source of truth: the SDK
-         generates AssemblyVersion / AssemblyFileVersion / AssemblyInformationalVersion from
-         it (VersionInfo.Current reads the latter at runtime; release.yml checks the tag
-         against this property). src\Properties\AssemblyInfo.cs keeps only what the SDK does
-         NOT generate (the WPF ThemeInfo attribute, ComVisible). -->
-    <Version>2026.11.7.1</Version>
+    <!-- Assembly identity + version info. Version drives AssemblyVersion / AssemblyFileVersion
+         (and the fallback InformationalVersion), so it must stay four numeric parts; the fork
+         suffix lives in InformationalVersion below. src\Properties\AssemblyInfo.cs keeps only
+         what the SDK does NOT generate (the WPF ThemeInfo attribute, ComVisible). -->
+    <Version>2027.11.18</Version>
+    <!-- Human-facing version. Version above must stay four numeric parts (the Win32 resource
+         compiler rejects "2027.11.18.BM"), so the fork suffix lives here; the SDK uses this
+         property verbatim when set, VersionInfo.Current reads it, and release.yml accepts a tag
+         matching EITHER property. Artifact names come from tools/pack.ps1. -->
+    <InformationalVersion>2027.11.18.BM</InformationalVersion>
     <!-- The SDK stamps InformationalVersion with the commit hash unless this is off —
-         关于页/更新检测需要纯净的 "1.0.0"。 -->
+         关于页 shows it, it must stay a clean "2027.11.18.BM". -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- Win32 FileDescription 来自 AssemblyTitle 属性（不是 NuGet 的 <Title>）。 -->
     <AssemblyTitle>TaskMonitor</AssemblyTitle>
@@ -21,7 +25,14 @@
     <Copyright>Copyright © 2026 双霖 (LineSoft)</Copyright>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <LangVersion>latest</LangVersion>
-    <Platforms>AnyCPU</Platforms>
+    <!-- x64 (not AnyCPU): the app is a 64-bit taskbar overlay end to end — SRUM, DXCore and
+         the DirectN pipeline all assume it — and AnyCPU made NuGet resolve LibreHardwareMonitorLib
+         to its **ref/net472 reference assembly** (350 KB, no IL bodies), which Costura then
+         embedded and the runtime rejected with BadImageFormatException on first load. x64 picks
+         runtimes/win-x64/lib/net472 (the real 1.2 MB assembly). Matches the released
+         task_monitor-<tag>-x64.exe. -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>AnyCPU;x64</Platforms>
     <!-- Elevation is self-managed (first-run consent dialog + runas self-relaunch in
          App.RunElevationGate), so the manifest declares asInvoker — see src\app.manifest.
          PerMonitorV2 is declared there; App's static ctor opts WPF into per-window DPI scaling. -->
@@ -40,6 +51,10 @@
     <PackageReference Include="FluentWpfCore" Version="1.0.5" />
     <!-- YamlDotNet: settings.yaml persistence (run-directory settings store, AppSettings). -->
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <!-- CPU temperature / package power. Loaded ON DEMAND only (see CpuSensorPack): the
+         embedded assemblies stay unfetched until a temperature consumer appears, so the idle
+         process carries none of it. Its ring0 path is PawnIO, which the user installs once. -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
   </ItemGroup>
 
   <ItemGroup>
@@ -63,6 +78,15 @@
          (the WPF SDK only auto-detects an App.xaml sitting next to the csproj). -->
     <Page Remove="src\App.xaml" />
     <ApplicationDefinition Include="src\App.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- UI localisation catalogues: one YAML per language, embedded (NOT copied to the output
+         directory) so single-file packaging stays single-file — Loc reads them through
+         Assembly.GetManifestResourceStream. The logical name is
+         task_monitor.lang.<code>.yaml; Loc matches it by suffix, see src/Localization/Loc.cs.
+         Adding a language = drop one file here + one entry in Loc.Lang/Parse. -->
+    <EmbeddedResource Include="lang\*.yaml" />
   </ItemGroup>
 
   <ItemGroup>

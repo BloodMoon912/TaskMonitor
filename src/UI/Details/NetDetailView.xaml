@@ -4,10 +4,12 @@
              xmlns:ikw="http://schemas.inkore.net/lib/ui/wpf"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
              xmlns:local="clr-namespace:task_monitor"
+             xmlns:loc="clr-namespace:task_monitor.Localization"
              xmlns:fluent="clr-namespace:FluentWpfCore.Controls;assembly=FluentWpfCore"
              Background="Transparent">
     <UserControl.Resources>
         <local:NetRateConverter x:Key="NetRate" />
+        <loc:LocTextConverter x:Key="LocText" />
     </UserControl.Resources>
 
     <ikw:SimpleStackPanel Spacing="12">
@@ -23,7 +25,7 @@
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                 <ui:FontIcon FontSize="24" VerticalAlignment="Center" Margin="0,3,8,0"
                              Icon="{x:Static ui:FluentSystemIcons.Globe_20_Regular}" />
-                <TextBlock Text="网络" FontSize="22"
+                <TextBlock Text="{loc:Tr detail.net.title}" FontSize="22"
                            VerticalAlignment="Center" />
                 <ContentControl x:Name="PinSlotHost" VerticalAlignment="Center" Margin="4,0,0,0" />
                 <!-- Public-IP privacy eye (a ToggleButton with the shared ChromeButtonStyle —
@@ -87,7 +89,7 @@
             <TextBlock x:Name="ConnCell" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
                        HorizontalAlignment="Left"
                        FontSize="12" Margin="0,0,0,8" TextTrimming="CharacterEllipsis">
-                <Run Text="连接：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run Text="{loc:Tr detail.net.label.connection}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <Run x:Name="ConnValueRun" Text="—" />
             </TextBlock>
             <!-- 连接 spans BOTH columns (declared first ⇒ the 速率 cell paints on top): code
@@ -103,25 +105,25 @@
                  case). The run is emptied when the 频段 cell below is collapsed (wired) —
                  速率 then sits flush at the column start. -->
             <TextBlock x:Name="RateCell" Grid.Row="0" Grid.Column="1" FontSize="12" Margin="0,0,0,8"
-                       TextTrimming="CharacterEllipsis"><Run x:Name="RateIndentRun" Foreground="Transparent" /><Run Text="速率：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                       TextTrimming="CharacterEllipsis"><Run x:Name="RateIndentRun" Foreground="Transparent" /><Run Text="{loc:Tr detail.net.label.rate}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <Run x:Name="RateValueRun" Text="—" />
             </TextBlock>
 
             <TextBlock x:Name="StdCell" Grid.Row="1" Grid.Column="0" FontSize="12" Margin="0,0,0,8"
                        TextTrimming="CharacterEllipsis">
-                <Run Text="标准：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run Text="{loc:Tr detail.net.label.standard}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <Run x:Name="StdValueRun" Text="—" />
             </TextBlock>
             <TextBlock x:Name="BandCell" Grid.Row="1" Grid.Column="1" FontSize="12" Margin="0,0,0,8"
                        TextTrimming="CharacterEllipsis">
-                <Run Text="频段：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Run Text="{loc:Tr detail.net.label.band}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <Run x:Name="BandValueRun" Text="—" />
             </TextBlock>
 
             <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,8">
                 <!-- The label adapts in code: LocalIp falls back to a global v6 address
                      when there's no v4, so it reads 本机 IPv6： in that case. -->
-                <TextBlock x:Name="LocalIpLabel" Text="本机 IPv4：" FontSize="12" VerticalAlignment="Center"
+                <TextBlock x:Name="LocalIpLabel" Text="{loc:Tr detail.net.label.local-ipv4}" FontSize="12" VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <!-- HyperlinkButton (a ButtonBase) so a pinned window's drag filter skips it;
                      RaiseHyperlinkClicks=False — it copies to the clipboard, never navigates.
@@ -140,7 +142,7 @@
                 </ui:HyperlinkButton>
             </StackPanel>
             <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
-                <TextBlock Text="公网 IPv4：" FontSize="12" VerticalAlignment="Center"
+                <TextBlock Text="{loc:Tr detail.net.label.public-ipv4}" FontSize="12" VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <ui:HyperlinkButton x:Name="PublicIpButton" FontSize="12" Padding="0"
                                     VerticalAlignment="Center" RaiseHyperlinkClicks="False"
@@ -162,7 +164,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="公网 IPv6：" FontSize="12" VerticalAlignment="Center"
+                <TextBlock Grid.Column="0" Text="{loc:Tr detail.net.label.public-ipv6}" FontSize="12" VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <ui:HyperlinkButton x:Name="PublicIpV6Button" Grid.Column="1" FontSize="12" Padding="0"
                                     HorizontalAlignment="Left" VerticalAlignment="Center"
@@ -174,13 +176,13 @@
             </Grid>
 
             <TextBlock Grid.Row="4" Grid.Column="0" FontSize="12"
-                       ToolTip="到默认网关的 ICMP 往返延迟">
-                <Run Text="本地延迟：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                       ToolTip="{loc:Tr detail.net.tip.lan-latency}">
+                <Run Text="{loc:Tr detail.net.label.lan-latency}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <Run x:Name="GatewayRttRun" Text="—" />
             </TextBlock>
             <TextBlock Grid.Row="4" Grid.Column="1" FontSize="12"
-                       ToolTip="到公共 DNS 的 ICMP 往返延迟">
-                <Run Text="公网延迟：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                       ToolTip="{loc:Tr detail.net.tip.public-latency}">
+                <Run Text="{loc:Tr detail.net.label.public-latency}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <Run x:Name="PublicRttRun" Text="—" />
             </TextBlock>
         </Grid>
@@ -198,11 +200,11 @@
                         <ColumnDefinition Width="14" />
                         <ColumnDefinition Width="72" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="高占用进程" FontSize="12"
+                    <TextBlock Grid.Column="0" Text="{loc:Tr common.top-processes}" FontSize="12"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Grid.Column="1" Text="↑上传" FontSize="12" TextAlignment="Right"
+                    <TextBlock Grid.Column="1" Text="{loc:Tr detail.net.top-processes.upload}" FontSize="12" TextAlignment="Right"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Grid.Column="3" Text="↓下载" FontSize="12" TextAlignment="Right"
+                    <TextBlock Grid.Column="3" Text="{loc:Tr detail.net.top-processes.download}" FontSize="12" TextAlignment="Right"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 </Grid>
                 <!-- Fixed height so the window (SizeToContent=Height) stays stable across
@@ -242,7 +244,7 @@
                                                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                                                 BorderThickness="1"
                                                 Visibility="{Binding TagVisibility}">
-                                            <TextBlock Text="{Binding TagText}" FontSize="10"
+                                            <TextBlock Text="{Binding TagText, Converter={StaticResource LocText}}" FontSize="10"
                                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                         </Border>
                                     </local:FollowTagPanel>

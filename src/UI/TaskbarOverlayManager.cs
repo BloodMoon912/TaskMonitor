@@ -38,11 +38,13 @@ namespace task_monitor
         private bool _snapToStart;
         private bool _compactLayout;
         private bool _showSeparators = true;
+        private float _layoutScale = 1f;
         private int[] _itemOrder = TaskbarWindow.NormalizeItemOrder(null);
         private int _sampleIntervalMs = 1000;
         private int _samplingMask = SystemSampler.MaskAll;
         private int _clickDisabledMask;
         private GpuTaskbarContent _gpuContent = GpuTaskbarContent.Usage;
+        private CpuTaskbarContent _cpuContent = CpuTaskbarContent.Usage;
         private bool _gpuTempFahrenheit;
         private bool _floatingTopmost = true;
         private bool _floatingAllowOutOfBounds;
@@ -151,13 +153,16 @@ namespace task_monitor
                 TaskbarDisplayInfo display = entry.Floating
                     ? FindFloatingDisplay(displays, entry.Window, hasBounds, bounds)
                     : entry.Target;
-                string displayName = display?.Name ?? entry.Target?.Name ?? "未知显示器";
+                // 這是「軟體已在執行」對話框的內容，全部走目錄（每個語言各一條 id）。以前整段
+                // 字面寫死簡體，繁中/英文介面看到的是簡體句子，只有外框標題是翻好的。
+                string displayName = display?.Name ?? entry.Target?.Name ?? Loc.T("overlay.display.unknown");
                 string displayLabel = display?.IsPrimary == true
-                    ? $"主显示器「{displayName}」" : $"显示器「{displayName}」";
-                string kind = entry.Floating ? "悬浮窗" : "任务栏覆盖层";
+                    ? Loc.F("overlay.display.primary", displayName)
+                    : Loc.F("overlay.display.named", displayName);
+                string kind = entry.Floating ? Loc.T("overlay.kind.floating") : Loc.T("overlay.kind.taskbar");
                 if (!hasBounds)
                 {
-                    result.Add($"- {displayLabel}：{kind}正在等待任务栏或重建。");
+                    result.Add(Loc.F("dialog.already-running.location.pending", displayLabel, kind));
                     continue;
                 }
 
@@ -165,20 +170,21 @@ namespace task_monitor
                 if (entry.Floating)
                 {
                     int edge = entry.Window.GetFloatingDockEdge(bounds);
-                    string dock = edge == 1 ? "，停靠在左侧边缘（贴边隐藏）"
-                        : edge == 2 ? "，停靠在右侧边缘（贴边隐藏）"
-                        : edge == 3 ? "，停靠在顶部边缘（贴边隐藏）" : string.Empty;
+                    string dock = edge == 1 ? Loc.T("dialog.already-running.dock.left")
+                        : edge == 2 ? Loc.T("dialog.already-running.dock.right")
+                        : edge == 3 ? Loc.T("dialog.already-running.dock.top") : string.Empty;
                     place = kind + dock;
                 }
                 else
                 {
-                    place = _snapToStart ? "任务栏，开始按钮旁"
-                        : _onLeft ? "任务栏，靠开始按钮一侧"
-                        : "任务栏，靠近系统托盘";
+                    place = _snapToStart ? Loc.T("dialog.already-running.place.start")
+                        : _onLeft ? Loc.T("dialog.already-running.place.edge")
+                        : Loc.T("dialog.already-running.place.tray");
                 }
                 string visibility = WindowInterop.IsWindowVisible(entry.Window.OverlayHwnd)
-                    ? string.Empty : "；当前不可见（可能开启了“全屏时隐藏”）";
-                result.Add($"- {displayLabel}：{place}；左上角屏幕坐标 ({bounds.left}, {bounds.top}){visibility}。");
+                    ? string.Empty : Loc.T("dialog.already-running.invisible");
+                result.Add(Loc.F("dialog.already-running.location.line",
+                    displayLabel, place, bounds.left, bounds.top, visibility));
             }
             return result;
         }
@@ -241,6 +247,15 @@ namespace task_monitor
             foreach (var window in _windows) window.SetShowSeparators(on);
         }
 
+        /// <summary>字體大小 — the overlay's type-derived layout scale (the window clamps it to
+        /// MinLayoutScale..MaxLayoutScale). Replayed in ConfigureWindow so a new or rebuilt
+        /// overlay inherits it, like every other appearance switch here.</summary>
+        public void SetOverlayLayoutScale(float scale)
+        {
+            _layoutScale = scale;
+            foreach (var window in _windows) window.SetOverlayLayoutScale(scale);
+        }
+
         public void SetItemOrder(IEnumerable<int> order)
         {
             _itemOrder = TaskbarWindow.NormalizeItemOrder(order);
@@ -269,6 +284,22 @@ namespace task_monitor
             foreach (var window in _windows) window.SetOverlayGpuTempDisplay(content, fahrenheit);
         }
 
+        /// <summary>CPU 任务栏显示 (使用率 / 温度) — a rendering choice only, so it is
+        /// replayed to every new/rebuilt overlay from here.</summary>
+        public void SetCpuTaskbarContent(CpuTaskbarContent content)
+        {
+            _cpuContent = content;
+            foreach (var window in _windows) window.SetCpuTaskbarContent(content);
+        }
+
+        /// <summary>Forces a redraw of every overlay WITHOUT a layout change. Used after a
+        /// runtime language switch: the overlay's labels are baked into the draw pass, so a
+        /// redraw is what makes the new language visible.</summary>
+        public void RedrawAll()
+        {
+            foreach (var window in _windows) window.RequestRedraw();
+        }
+
         public void SetMergeSamePathProcesses(bool on) => _sampling.SetMergeByPath(on);
         public void SetDiskDisplay(int mode, int index) => _sampling.SetDiskDisplay(mode, index);
         public void SetGpuDisplay(int mode, int index) => _sampling.SetGpuDisplay(mode, index);
@@ -276,12 +307,12 @@ namespace task_monitor
         public void SetClashApi(bool enabled, string address, string secret) => _sampling.SetClashApi(enabled, address, secret);
         public void SetPublicIpLookup(bool enabled) => _sampling.SetPublicIpLookup(enabled);
 
-        public void SetColumnClickEnabled(int slot, bool enabled)
+        public void SetColumnClickEnabled(int column, bool enabled)
         {
-            if (slot < 0 || slot >= 5) return;
-            int bit = 1 << slot;
+            if (column < 0 || column >= 5) return;
+            int bit = 1 << column;
             _clickDisabledMask = enabled ? _clickDisabledMask & ~bit : _clickDisabledMask | bit;
-            foreach (var window in _windows) window.SetColumnClickEnabled(slot, enabled);
+            foreach (var window in _windows) window.SetColumnClickEnabled(column, enabled);
         }
 
         public void SetFloatingTopmost(bool on)
@@ -489,12 +520,14 @@ namespace task_monitor
             window.SetPlacement(_onLeft, _snapToStart);
             window.SetCompactLayout(_compactLayout);
             window.SetShowSeparators(_showSeparators);
+            window.SetOverlayLayoutScale(_layoutScale);
             window.SetItemOrder(_itemOrder);
             window.SetSampleInterval(_sampleIntervalMs);
             window.SetOverlayMetricSamplingMask(_samplingMask);
             window.SetOverlayGpuTempDisplay(_gpuContent, _gpuTempFahrenheit);
-            for (int slot = 0; slot < 5; slot++)
-                window.SetColumnClickEnabled(slot, (_clickDisabledMask & (1 << slot)) == 0);
+            window.SetCpuTaskbarContent(_cpuContent);
+            for (int column = 0; column < 5; column++)
+                window.SetColumnClickEnabled(column, (_clickDisabledMask & (1 << column)) == 0);
             window.SetFloatingMode(entry.Floating, _floatingX, _floatingY);
             window.SetFloatingTopmost(_floatingTopmost);
             window.SetFloatingAllowOutOfBounds(_floatingAllowOutOfBounds);

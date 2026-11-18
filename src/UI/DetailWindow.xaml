@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:fluent="https://github.com/TwilightLemon/FluentWpfCore"
         xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
+        xmlns:loc="clr-namespace:task_monitor.Localization"
         mc:Ignorable="d"
         Background="Transparent"
         Foreground="{DynamicResource TextFillColorPrimaryBrush}"
@@ -65,7 +66,7 @@
                                        Height="32"
                                        HoverBackground="#E81123" HoverForeground="White"
                                        PressedBackground="#F1707A" PressedForeground="White"
-                                       ToolTip="关闭">
+                                       ToolTip="{loc:Tr detail.window.close.tooltip}">
                         <ui:FontIcon FontSize="13"
                                      Icon="{x:Static ui:FluentSystemIcons.Dismiss_16_Regular}" />
                     </ui:TitleBarButton>
@@ -85,7 +86,7 @@
                      ShowColumn parks it in the view's header PinSlot, right of the title. -->
                 <ToggleButton x:Name="PinButton"
                               Style="{StaticResource ChromeButtonStyle}"
-                              ToolTip="固定"
+                              ToolTip="{loc:Tr detail.window.pin.tooltip}"
                               Checked="PinButton_Checked" Unchecked="PinButton_Unchecked">
                     <ui:FontIcon x:Name="PinIcon" FontSize="14"
                                  Icon="{x:Static ui:FluentSystemIcons.Pin_16_Regular}" />

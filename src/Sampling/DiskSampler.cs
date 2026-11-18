@@ -32,9 +32,18 @@ namespace task_monitor
         public int Index { get; }                    // N of \\.\PhysicalDriveN
         public string Name { get; }                  // vendor + product model string
         public DiskKind Kind { get; }
-        public string TabTitle => string.IsNullOrEmpty(_driveLetters)
-            ? $"磁盘 {Index}"
-            : $"磁盘 {Index} ({_driveLetters})";    // tab header, Task Manager style: 磁盘 0 (C: D:)
+        public string TabTitle
+        {
+            get
+            {
+                // 「磁盘」是簡體字面，繁體介面要顯示「磁碟」、英文介面要 "Disk"——所以前綴走目錄
+                // 模板 detail.tab.disk.n（"磁盘 {0}"）。磁碟代號 "(C: D:)" 語言中立，不必翻譯。
+                // 這裡是分頁標題與設定頁磁碟選單的唯一來源，而且兩邊都是 Binding，ApplyOnce 會
+                // 跳過綁定（不能就地改），所以必須在源頭就取目錄譯文。
+                string title = string.Format(Loc.T("detail.tab.disk.n"), Index);
+                return string.IsNullOrEmpty(_driveLetters) ? title : title + " (" + _driveLetters + ")";
+            }
+        }
 
         internal DiskInfo(int index, string name, DiskKind kind)
         {
@@ -44,6 +53,27 @@ namespace task_monitor
         }
 
         public event PropertyChangedEventHandler PropertyChanged;
+
+        private string _temperatureText = "--";        /// <summary>SMART temperature(s) for THIS disk, filled by <see cref="SensorRouter"/>
+        /// from the on-demand sensor pack: "36°C" for a single reading, or the composite plus
+        /// its extra sensors ("36°C（其他测点 35.9 / 45.9）") — a bare column of numbers told
+        /// the user nothing about which drive or which sensor they came from.</summary>
+        public string TemperatureText
+        {
+            get => _temperatureText;
+            internal set { if (_temperatureText != value) { _temperatureText = value; Notify(nameof(TemperatureText)); } }
+        }
+
+        private string _capacityText = "--";
+        /// <summary>"已用 1.24 TB / 共 1.82 TB" for THIS disk. Filled from the mounted volumes'
+        /// own total/free figures (see <see cref="DiskSampler.UpdateDriveLetters"/>) rather than
+        /// the device length, because a disk's usable capacity is what the user compares against
+        /// Explorer; a disk with no mounted volume keeps "--" since there is nothing to report.</summary>
+        public string CapacityText
+        {
+            get => _capacityText;
+            internal set { if (_capacityText != value) { _capacityText = value; Notify(nameof(CapacityText)); } }
+        }
 
         private string _driveLetters = "";          // "C: D:" — letters whose volumes sit on this disk
 
@@ -342,6 +372,26 @@ namespace task_monitor
                 DiskInterop.FILE_SHARE_READ_WRITE, IntPtr.Zero,
                 DiskInterop.OPEN_EXISTING, 0, IntPtr.Zero);
 
+        /// <summary>"已用 81.6 GB / 共 3.64 TB" was the old bug visible in one line: each number
+        /// picked its own unit, so the pair read as two different scales and the user could not
+        /// see how full the disk was. Both numbers now share the unit chosen by the TOTAL, which
+        /// is the figure the user compares against in Explorer.</summary>
+        private static string FormatCapacity(long usedBytes, long totalBytes)
+        {
+            const double GB = 1024.0 * 1024.0 * 1024.0;
+            const double TB = GB * 1024.0;
+            bool useTb = totalBytes >= TB;
+            double unit = useTb ? TB : GB;
+            string fmt = useTb ? "F2" : "F1";
+            string suffix = useTb ? " TB" : " GB";
+            string usedText = (usedBytes / unit).ToString(fmt) + suffix;
+            string totalText = (totalBytes / unit).ToString(fmt) + suffix;
+            // 句子外殼走目錄：兩個數字在三個語言裡的排列不同（英文是 "Used 1.34 TB / 3.64 TB"），
+            // 硬拼字面就只有簡體一種說法。單位與數字格式維持不動：兩個數字共用由「總容量」決定的
+            // 單位，這正是修掉 81.6 GB / 3.64 TB 那種自相矛盾讀數的關鍵。
+            return Loc.F("detail.disk.capacity.used-total", usedText, totalText);
+        }
+
         private static void ZeroMetrics(DiskInfo info)
         {
             info.UtilPercent = 0;
@@ -403,6 +453,7 @@ namespace task_monitor
         private void UpdateDriveLetters()
         {
             var byDisk = new Dictionary<int, List<string>>();
+            var capacity = new Dictionary<int, long[]>();   // [0] = used, [1] = total
             foreach (string drive in Environment.GetLogicalDrives())   // "C:\"
             {
                 string path = @"\\.\" + drive.TrimEnd('\\');
@@ -410,9 +461,15 @@ namespace task_monitor
                     path, 0, DiskInterop.FILE_SHARE_READ_WRITE, IntPtr.Zero,
                     DiskInterop.OPEN_EXISTING, 0, IntPtr.Zero);
                 if (handle.IsInvalid) continue;
+                long volumeTotal = 0, volumeFree = 0;
                 try
                 {
-                    // DISK_EXTENTS: uint NumberOfDiskExtents at 0x00, then 4 bytes ALIGNMENT
+                    var info = new System.IO.DriveInfo(drive);
+                    if (info.IsReady) { volumeTotal = info.TotalSize; volumeFree = info.AvailableFreeSpace; }
+                }
+                catch { /* 光碟機、未格式化、權限不足——容量留空，不影響字母映射 */ }
+                try
+                {                    // DISK_EXTENTS: uint NumberOfDiskExtents at 0x00, then 4 bytes ALIGNMENT
                     // PADDING, then DISK_EXTENT[NumberOfDiskExtents] at 0x08 — each 24 bytes
                     // (DWORD DiskNumber + pad + LARGE_INTEGER StartingOffset + ExtentLength).
                     // The first extent is NOT at 0x04 (that reads the zero padding and maps
@@ -431,6 +488,12 @@ namespace task_monitor
                         if (!byDisk.TryGetValue(diskNumber, out var letters))
                             byDisk[diskNumber] = letters = new List<string>();
                         if (!letters.Contains(letter)) letters.Add(letter);
+                        if (volumeTotal > 0)
+                        {
+                            if (!capacity.TryGetValue(diskNumber, out var acc)) capacity[diskNumber] = acc = new long[2];
+                            acc[1] += volumeTotal;
+                            acc[0] += volumeTotal - volumeFree;
+                        }
                     }
                 }
                 finally { handle.Dispose(); }
@@ -441,6 +504,9 @@ namespace task_monitor
                 var letters = byDisk.TryGetValue(kv.Key, out var l) ? l : null;
                 letters?.Sort(StringComparer.Ordinal);
                 kv.Value.Info.DriveLetters = letters == null ? "" : string.Join(" ", letters);
+                kv.Value.Info.CapacityText = capacity.TryGetValue(kv.Key, out var cap) && cap[1] > 0
+                    ? FormatCapacity(cap[0], cap[1])
+                    : "--";
             }
         }
 

@@ -526,44 +526,22 @@ and bricked the D2D target on the first resize — the 2026-07-30 crash.log floo
 All resizes go through `ResizeBackBuffer`; the wrappers live on `RenderState`, never in
 locals. `SetTarget(null)` alone drops only the context's reference.
 
-## 33. 更新检测
+## 33. 版本号有两个属性，各自负责一件事；启动时的更新检测已移除
 
-*`src/UpdateChecker.cs`, `src/VersionInfo.cs`*
+*`src/VersionInfo.cs`、`task_monitor.csproj`、`tools/pack.ps1`*
 
-`UpdateChecker.CheckOnce` is kicked off at the tail of `OnStartup`: thread-pool fetch → UI
-thread `UpdateAvailableDialog` (iNKORE modern window, same family as `ConsentDialog`).
+**`<Version>` 必须四段数字**（`2027.11.18`）：SDK 用它生成 `AssemblyVersion` / `AssemblyFileVersion`，
+Win32 资源编译器不接受 `2027.11.18.BM` 这种尾段（会 `CS7034`）。**对外的版本串放
+`<InformationalVersion>`**（`2027.11.18.BM`）：SDK 在该属性显式设置时原样使用，`VersionInfo.Current`
+（关于页）读它，`tools/pack.ps1` 拿它当产物名，`release.yml` 的 tag 校验接受两者之一。
+`<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>`
+必须保留，否则 CI 会把 commit hash 拼到版本串尾巴。完整发布流程（打包、签名、CI 步骤、失败模式）：
+`docs/release.md`。
 
-**版本号唯一来源 = csproj `<Version>`** (`VersionInfo.Current` reads the SDK-generated
-`AssemblyInformationalVersion`; `release.yml` enforces tag == csproj). Two sources:
-
-- `github` = anonymous `api.github.com/.../releases/latest` (must send a User-Agent or 403);
-- **`cnb` (default) = read the WEB layer's `/-/releases/latest` 307 redirect** (the
-  `Location` header carries `/-/releases/tag/<tag>` directly — the GitHub convention, a
-  single HEAD request, no HTML parsing; if the redirect disappears, fall back to scraping
-  the releases list page's tag links for the max version). The CNB OpenAPI is **anonymously
-  401** (every releases endpoint in the official swagger declares BearerAuth), so the API is
-  not an option.
-
-The system proxy applies (do NOT set `Proxy=null` the way ClashSampler does — the update check
-faces the public internet, and the user's proxy helps rather than hurts).
-
-**A first attempt that cannot REACH the host is retried once, 5 minutes later**
-(`RetryDelay` / `ScheduleRetry`: a one-shot `System.Threading.Timer`, never a sleeping pool
-thread). The logon launch happens before Wi-Fi/VPN/DHCP is up often enough that a transient
-miss would otherwise cost the whole session's prompt. The gate is `IsNetworkFailure` — the
-DNS/connect/timeout/TLS-handshake `WebExceptionStatus` family plus a nested
-`SocketException`/`IOException` — deliberately NOT an HTTP answer we cannot use (403 rate
-limit, 404, changed page structure): five minutes changes nothing about those, so
-`ProtocolError`/`TrustFailure` are not retried. Single-shot by construction: the retry passes
-`canRetry:false`, so a second failure is log-only until the next launch. The retry re-reads the
-LIVE config, so 检查更新 OFF during the window cancels it (off must mean zero traffic) and a
-源 switch is honored.
-
-`settings.yaml` keys: `updateCheckEnabled` (null=开), `updateSource` (null=cnb, only
-"github" is written), `ignoredUpdateVersion`. **"不再提醒" skips only that specific
-version** — a newer version still prompts. Three buttons: 立即更新 (opens the release page) /
-不再提醒 / 稍后. All exceptions are log-only, never fatal; a failed check is silent
-(`更新检测：… 连接失败，5 分钟后重试一次` / `… 读取失败（下次启动重试）` are the only traces).
+2026-11-18 按用户要求删除了整套「检查更新」：`UpdateChecker.cs`、`UpdateAvailableDialog`、
+设置 → 通用 的开关与更新源、`updateCheckEnabled` / `updateSource` / `ignoredUpdateVersion`
+三个 yaml 键以及对应的本地化 id。**启动路径上不再有任何对外网络请求**；`<Version>` 与发版
+tag 的一致性校验仍由 `release.yml` 负责。
 
 ## 34. net48's `Run.Text` is not a dependency property
 
@@ -1354,3 +1332,95 @@ Window / Popup 模板、预热窗口、设置窗口和不可见菜单宿主正�
 最终也没有保留任何“第二次启动跳过 UAC”的规避逻辑。验证用外部 `cmd.exe /c exit` 的 runas
 触发 UAC 并取消：设置滚动/切换与任务栏右键均保持正常。不得仅为阴影或动画性能重新打开
 此开关；要恢复必须先证明当前 WPF/runtime 已解决该 display-reset 缺陷。
+
+## 49. CPU 温度感测包按需载入
+
+**规则**：`LibreHardwareMonitorLib` 的型别只允许出现在 `src/Sampling/Sensors/LhmWorker.cs`。
+任何其他档案出现 `using LibreHardwareMonitor...`、或者把 LHM 型别放进栏位初始化/建构式/启动
+路径，都会在启动时就把 Costura 内嵌的 13 个组件解析进记忆体，按需设计的收益归零。
+
+**实测（2026-11-17，本机 Ryzen 7 7800X3D / RTX 4070 SUPER）**：
+
+- Costura 5.7 预设不预载：未触碰 LHM 型别时 `AppDomain` 只有 4 个组件、工作集 19 MB、
+  启动 0.2 ms；第一次 `Type.GetType("...Computer, LibreHardwareMonitorLib")` 才花 8.6 ms
+  解析并载入（5 个组件、26 MB）。
+- LHM 各硬体类别单次 `Update()` 成本：`Cpu` **0.348 ms**、`Motherboard` 0.000 ms（本机
+  Gigabyte EC 未实作，无 sub-hardware）、`Memory` 0.002 ms、`GpuNvidia` **93.518 ms**
+  （39 个感测器）。→ CPU 温度走 LHM 完全合理；GPU 走 LHM 是灾难，本专案 GPU 一律 DXCore。
+- 全套自订 `Computer` 的 `Open()` 约 108–466 ms（取决于启用的硬体类别），必须放在背景/采样
+  绪而非 UI 绪；首次出值前显示 `--`。
+
+**机制**：`SensorPack` 用 2 分钟的 **需求 TTL**（`RequestCpuTemperature()` 刷新，UI 绪可
+安全呼叫，原子 32-bit 栏位），到期即 `Computer.Close()` 并丢弃 worker；开启失败（缺 PawnIO）
+记 60 秒退避，绝不在 tick 路径上重试。**任务栏也是消费者**：CPU 槽显示温度时没有每 tick 的 UI 刷新可以挂需求，所以 SystemSampler.Sample 在 _cpuTempForTaskbar 为真时自行 Demand()——否则感测包两分钟后卸载、该行永久显示 --。
+`new LhmWorker()` 的开启走背景绪（`Computer.Open()` 带磁盘枚举要 0.1–0.5 s），绝不在采样 tick 上同步做。
+
+**诚实限制**：.NET Framework 无法卸载已载入的组件，
+能释放的只有硬体句柄与物件图；要真正零残留得放进独立子行程。
+
+**量测证据**：`Computer.Open()` 351.9 ms（CPU+MB+Controller）、`Update()` 0.589 ms/次、
+62 个感测器、740 KB heap、13 个 DLL 2.9 MB（压缩后单档 +1.65 MB，实测 6,334,464 →
+7,988,736 B）。
+
+## 50. 任务栏栏宽由量测文字决定，不是手工常数
+
+**规则**：水平双行带（横向任务栏 / 悬浮卡片）的每一栏宽度 = `RowInset*2 + 标签宽 +
+LABEL_VALUE_GAP + 最宽值储备`（`src/UI/TaskbarWindow.cs` 的 `MeasureColumnNeeds` /
+`ColumnWidth`）。`GroupWidths` / `CompactGroupWidths` 只是 **FLOOR**（下限），不是宽度；
+`MaxColumnDip = 150f` 是上限。竖直任务栏仍用 `ComputeVerticalLayout` 的 `GroupW(g, compact)`。
+
+**为什么用储备值而不是即时文字**：覆盖层是 `SetParent` 嵌进 Shell_TrayWnd 的子窗口，宽度
+一变就得 `ResizeBackBuffer` + `RepositionOverlay` 重嵌。若按 live text 量（`9%`→`10%`），
+宽度每秒都会变——等于每秒重设窗口。储备值是每种槽能出现的最宽文字：
+`100%`（比率）、`212°F`（温度，华氏比摄氏宽，且温度单位是设置项）、`999.9 MB/s`（网络速率）。
+
+**量测时机**：`Draw` 在 `ComputeLayout` **之前**先 `MeasureColumnNeeds(s)`（靠
+`_slotNeedGen`/`_slotNeedMeasuredGen` 只做一次）；`CreateTextFormats`（字体大小变化重建
+IDWriteTextFormat）尾端调用 `InvalidateColumnMetrics()` 让缓存失效。量测用
+`IDWriteFactory.CreateTextLayout(...).GetMetrics(out DWRITE_TEXT_METRICS).width`，
+量测失败退回 `text.Length * 8f`（绝不抛出）。
+
+**resize 绝不在 draw 途中做**：`MeasureColumnNeeds` 只置 `RenderState.ColumnNeedsDirty`，
+`WM_TIMER` 里 `DrawPublishedSnapshot` 返回后才 `ResizeForLayout` 再重绘一次。第一帧因此用
+可以按 floor 宽度画（日志只会看到一次 `采样布局变化——覆盖层重设 394x48→405x48px`）。
+
+**窗口宽度取 ceil**：量测结果是**小数 DIP**，`ComputeTargetSize` 的水平分支必须
+`DpiScaleCeil`——截断会让最右一栏少 1 px，网络速率尾字(`s`)被切。
+
+**独格（栏里只坐着一个 item）**：`DrawLoneCell` 用整栏全高画「标签左 + 数值右、垂直居中」，
+不是「标签上带 + 数值下带」。这是 LiteMonitor 的做法（`src/UI/HorizontalLayout.cs`
+`col.ColumnWidth = Math.Max(widthTop, widthBottom)`、`TaskbarRenderer.cs` 单 item 栏用整个
+`col.Bounds` 全高绘制）；它也顺带解决了「网络占两个 position 导致相邻出现一个空格」的问题
+（见 `GroupIsLone`）。
+## 51. 同一裝置的使用率與溫度是一個「圖磚」，不是兩格
+
+工作列的每一個 cell（欄）可以放**一個**指標，也可以放同一裝置的**兩個**數量——CPU 的
+使用率＋溫度、GPU 的使用率＋溫度。這兩者用起來必須像一個東西：一個標題、兩列數值、整欄
+高亮、**一個**可按區。使用者原話：「CPU gpu溫度佔用應該像磁碟一樣只顯示一個標題然後上下兩個
+數值顯示。然後應該只有一個可按地方，磁碟也應該將可按地方整欄高光。」
+
+四條實作規則，都在 src/UI/TaskbarWindow.cs：
+
+1. **標題畫一次**（TryColumnLabel）。兩列的 SlotLabelText 相同才算圖磚（CPU＋CPU、
+   `GPU`＋`GPU`）；不同指標共用一格（顯存放在記憶體下面）**不算**，那種格子保留逐列標題，
+   否則第二列的標題會變成謊言。圖磚的標題用 TryColumnRect 拿到整欄 rect 再畫，因此它是
+   **垂直居中**在兩列之間，看起來是這一格的標題而不是第一列的標籤；兩列本身只畫值
+   （DrawPosValue），不再重複裝置名。
+2. **一個可按區**（HitTestSlot）。圖磚的兩列都回傳同一個 slot（上面那列），所以點溫度那行
+   開的仍是 CPU 頁；獨格（GroupIsLone，某一格只有一列）下方那個「洞」也不再是死區。
+   不同指標共用的格子仍按列判定，顯存與記憶體各自可點。
+3. **整欄高亮**（TryHighlightRect）。圖磚與獨格的 hover/選取填滿整欄（top..bottom），
+   逐列格子才填自己那一列。垂直任務欄的每一列本來就是一個指標，維持逐列。
+
+4. **不畫中間那條橫線**（DrawHorizontal 的分隔線迴圈）。「顯示分割線」開啟時，只有「兩個不同指標
+   共用一格」才在中線畫 hairline（顯存／記憶體）；圖磚與獨格都跳過——橫線會把圖磚的標題從中間
+   切開。使用者原話：「分間線cpu同gpu不應該有橫線應該像磁碟一樣。」（2026-11-18）
+
+背景：排列是「兩個 position 一個 cell」，網路獨佔兩個 position 且必須起於偶數位，所以它的
+左邊會留下一個洞；那個洞由 GroupIsLone 認出來畫成獨格（LiteMonitor 的單 item 欄是整欄全高、
+標籤左／數值右垂直居中）。圖磚只是把「兩列同一個裝置」套上同一條規則。
+
+**顯示項目不放在右鍵選單**（使用者原話：「顯示項目裏面的所有東西不應該在右鍵選單控制」）。
+哪個圖磚存在、順序怎麼排，全部由 設定 → 外觀 → 項目順序 的六張卡片（一張一個圖磚，各自一個 ToggleSwitch）
+決定；右鍵選單只留「改變外觀」的動作（悬浮模式／置頂／字體大小／語言／監控歷史／設定／結束）。
+App.ToggleExtraItem 與 menu.shown-items 子選單已移除，menu.metric.* 這組 id 只剩設定頁在用。

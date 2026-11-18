@@ -204,7 +204,6 @@ src/
   Logger.cs        file log — logs/task_monitor-yyyy-MM-dd.log next to the exe (gotchas §5)
   AppSettings.cs   settings.yaml store — every key documented per-property in the file
   VersionInfo.cs   版本号读取口（读 SDK 按 csproj `<Version>` 生成的 AssemblyInformationalVersion）
-  UpdateChecker.cs 启动时检查更新（gotchas §33）
   StartupTask.cs   开机自启动 logon task (schtasks /XML) — the task itself is the state (gotchas §21)
   Sampling/        per-metric samplers + SystemSampler facade + SamplingController (unique owner) + ServiceHostMap
   Interop/         P/Invoke boundary per native API (each file's header says what it covers)
@@ -216,7 +215,6 @@ src/
     ConsentDialog           first-run UAC-consent prompt (iNKORE modern window, unelevated)
     AlreadyRunningDialog    二次启动通知（iNKORE modern window — 各覆盖层的实时位置）
     StartupGuideWindow      first-run display-mode/placement cards with vector diagrams (iNKORE + Mica)
-    UpdateAvailableDialog   发现新版本提醒 (iNKORE modern window — 立即更新/不再提醒/稍后)
     Common/                 formatters · ProcessListTip · ProcessKillMenu (the process lists' right-click 结束进程: list-level menu + confirm card, same rebind-proof pattern as ProcessListTip) · ProcessIconCache (the shared per-exe icon cache) · ChartTipHost/ChartPalette (the shared chart hover tip + colors) · PivotNavButtonFix · FollowTagPanel · the scroll stack
     Details/                the five IDetailViews
     Charts/                 hand-drawn DrawingContext charts

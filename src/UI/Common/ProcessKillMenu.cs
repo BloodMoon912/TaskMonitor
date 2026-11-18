@@ -87,7 +87,12 @@ namespace task_monitor
                 // Contextualize the item with the row's own name (the ×N spelling matches
                 // the row's merge chip): capped + ellipsized so a long service display name
                 // can't blow the menu out to absurd widths.
-                _killHeaderText.Text = _targets.Count > 1 ? $"结束进程 {p.Name} ×{_targets.Count}" : $"结束进程 {p.Name}";
+                // 選單 header 走目錄模板（menu.kill-process / menu.kill-process-many，值形如
+                // "结束进程 {0}"），帶佔位符的字面不可能靠 Loc.ByText 反查命中；ContextMenu 又是
+                // 獨立視覺樹，ApplyOnce 走不到。每次右鍵重算，所以語言切換後下一次就是新語言。
+                _killHeaderText.Text = _targets.Count > 1
+                    ? string.Format(Loc.T("menu.kill-process-many"), p.Name, _targets.Count)
+                    : string.Format(Loc.T("menu.kill-process"), p.Name);
 
                 _menu.PlacementTarget = _list;
                 _menu.Placement = PlacementMode.MousePoint;
@@ -173,11 +178,11 @@ namespace task_monitor
                 // The confirm card: a view-owned popup in the tooltip idiom (AllowsTransparency
                 // for the rounded corners), themed entirely via DynamicResource so it follows
                 // the app theme like the window's other surfaces.
-                _killButton = new Button { Content = "结束", MinWidth = 88 };
+                _killButton = new Button { Content = Loc.T("dialog.kill.confirm"), MinWidth = 88 };
                 _killButton.SetResourceReference(FrameworkElement.StyleProperty, "AccentButtonStyle");
                 _killButton.Click += (s, e) => Kill();
 
-                _cancelButton = new Button { Content = "取消", MinWidth = 88 };
+                _cancelButton = new Button { Content = Loc.T("common.cancel"), MinWidth = 88 };
                 _cancelButton.SetResourceReference(FrameworkElement.StyleProperty, "DefaultButtonStyle");
                 _cancelButton.Click += (s, e) => _confirm.IsOpen = false;
 
@@ -256,16 +261,17 @@ namespace task_monitor
                 _cardIcon.Visibility = hasIcon ? Visibility.Visible : Visibility.Collapsed;
                 _cardIconGap.Visibility = hasIcon ? Visibility.Visible : Visibility.Collapsed;
 
+                // 確認卡每次開啟都重算文字，語言切換後新開的卡就是新語言。
                 var targets = _targets ?? new List<int>();
                 _confirmTitle.Text = targets.Count > 1
-                    ? $"结束 {p.Name} 的全部 {targets.Count} 个进程？"
-                    : $"结束 {p.Name}？";
+                    ? string.Format(Loc.T("dialog.kill.confirm-many"), p.Name, targets.Count)
+                    : string.Format(Loc.T("dialog.kill.confirm-one"), p.Name);
                 var pidText = $"PID {string.Join(", ", targets)}";
                 _confirmDetail.Text = p.ServiceHost != null
-                    ? $"{pidText} · svchost.exe 服务宿主——它承载的系统服务也会一并停止，相关功能可能中断。"
-                    : $"{pidText} · 结束后该进程未保存的数据将丢失。";
+                    ? string.Format(Loc.T("dialog.kill.note-svchost"), pidText)
+                    : string.Format(Loc.T("dialog.kill.note-normal"), pidText);
                 _killButton.Visibility = Visibility.Visible;
-                _cancelButton.Content = "取消";
+                _cancelButton.Content = Loc.T("common.cancel");
 
                 // Same offset scheme as the row tooltip: below-right of the right-click point.
                 _confirm.HorizontalOffset = _anchor.X + 14;
@@ -318,19 +324,21 @@ namespace task_monitor
                 // Partial or total failure: swap the card into its error form (结束 hidden,
                 // 取消 relabelled 关闭) so the reason is seen where the click happened.
                 Logger.Warn($"结束进程 {id} 失败：成功 {ok}/{targets.Count}，err={firstErr}");
-                _confirmTitle.Text = ok > 0 ? $"已结束 {ok}/{targets.Count} 个进程" : "结束进程失败";
+                _confirmTitle.Text = ok > 0
+                    ? string.Format(Loc.T("dialog.kill.done"), ok, targets.Count)
+                    : Loc.T("dialog.kill.failed");
                 _confirmDetail.Text = ErrorText(firstErr);
                 _killButton.Visibility = Visibility.Collapsed;
-                _cancelButton.Content = "关闭";
+                _cancelButton.Content = Loc.T("common.close");
             }
 
             private static string ErrorText(int err)
             {
                 switch (err)
                 {
-                    case 5: return "拒绝访问——该进程可能受系统保护（PPL）。";
-                    case 87: return "进程已不存在（可能在确认前已退出）。";
-                    default: return $"系统错误 {err}。";
+                    case 5: return Loc.T("dialog.kill.error.access-denied");
+                    case 87: return Loc.T("dialog.kill.error.gone");
+                    default: return string.Format(Loc.T("dialog.kill.error.system"), err);
                 }
             }
 
@@ -338,7 +346,7 @@ namespace task_monitor
             {
                 // The card is reused across rows — undo the error form's relabelling.
                 _killButton.Visibility = Visibility.Visible;
-                _cancelButton.Content = "取消";
+                _cancelButton.Content = Loc.T("common.cancel");
             }
 
             private void CloseAll()

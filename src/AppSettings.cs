@@ -18,7 +18,13 @@ namespace task_monitor
     /// slot shows the utilization (the default), the temperature, or BOTH — "both" packs TWO
     /// stacked rows ("GPU 42%" + "GPU 65°C"), not one concatenated line. Values = the settings
     /// combo indices. null = Usage.</summary>
-    public enum GpuTaskbarContent { Usage, Temperature, Both }
+    public enum GpuTaskbarContent { Usage, Temperature, Both, Vram }
+
+    /// <summary>CPU 任务栏显示内容 (settings.yaml <c>cpuTaskbarContent</c>): the taskbar CPU
+    /// slot shows the utilization (the default) or the CPU temperature in its place. Kept to
+    /// ONE row on purpose — a two-row CPU block would need its own packing slot in
+    /// ComputeLayout; the detail popup carries the full picture either way. null = Usage.</summary>
+    public enum CpuTaskbarContent { Usage, Temperature }
 
     /// <summary>GPU 温度单位 (settings.yaml <c>gpuTempUnit</c>): the display unit for GPU
     /// temperatures (taskbar row + detail popup) — the snapshot itself always carries Celsius;
@@ -77,6 +83,45 @@ namespace task_monitor
         /// </summary>
         public bool? OverlaySnapToStart { get; set; }
 
+        /// <summary>
+        /// CPU 温度 (设置 → 采样项目 → CPU → 温度, yaml <c>cpuTemperatureEnabled</c>):
+        /// null = on. Off forbids the on-demand sensor pack from ever loading. On does NOT
+        /// cost anything at idle — the pack only opens when a consumer (the CPU detail
+        /// window) refreshes its demand window, and it unloads again 2 minutes after the
+        /// last refresh (see <see cref="CpuSensorPack"/>).
+        /// </summary>
+        public bool? CpuTemperatureEnabled { get; set; }
+
+        /// <summary>
+        /// CPU 任务栏显示内容 (settings.yaml <c>cpuTaskbarContent</c>): null = 使用率 (the
+        /// default), <see cref="CpuTaskbarContent.Temperature"/> = the CPU slot shows the
+        /// temperature instead. The value comes from the on-demand sensor pack, so this
+        /// switch alone does not load it — the CPU detail popup's demand does.
+        /// </summary>
+        public CpuTaskbarContent? CpuTaskbarContent { get; set; }
+
+        /// <summary>
+        /// 界面语言 (settings.yaml <c>uiLanguage</c>): null = 简体中文 (the original strings),
+        /// "zh-TW" = 繁體中文, "en" = English. Applied at startup and from the right-click
+        /// menu; windows created afterwards come up translated (see <see cref="Loc"/>).
+        /// </summary>
+        public string UiLanguage { get; set; }
+
+        /// <summary>
+        /// 字體大小 (settings.yaml <c>uiFontScale</c>): 0.9 / 1.0 (null) / 1.15 / 1.3, applied to
+        /// the WPF detail windows. The taskbar overlay is NOT scaled — its 44-DIP two-line block
+        /// sits inside a ~48-DIP band, so it can only absorb ~4 % (see <see cref="Typography"/>).
+        /// </summary>
+        public double? UiFontScale { get; set; }
+
+        /// <summary>
+        /// 覆盖层自定義名稱 (settings.yaml <c>overlayLabels</c>): key = the built-in label
+        /// ("内存", "磁盘", "GPU"…), value = what the taskbar draws instead. Null = none.
+        /// Beats both the built-in label and the language catalogue; the value is drawn
+        /// as-is, so a label longer than the cell will squeeze its value (the cell is 74 DIP).
+        /// </summary>
+        public Dictionary<string, string> OverlayLabels { get; set; }
+
         /// <summary>任务栏窗口同时显示的显示器。null = 跟随当前主显示器（旧配置默认）；
         /// 非空时保存完整选择，已断开项保留到重连；运行时无有效目标才临时回退主屏。</summary>
         public List<TaskbarDisplaySelection> TaskbarDisplays { get; set; }
@@ -96,7 +141,7 @@ namespace task_monitor
 
         /// <summary>
         /// 显示分割线（设置 → 外观）：任务栏窗口与悬浮窗口中各采样项目之间的分割线。
-        /// null = 显示（默认，仅关闭时写入 false）。只影响绘制，不改变布局或点击区域，
+        /// null = 不显示（默认，仅开启时写入 true）。只影响绘制，不改变布局或点击区域，
         /// 通过 <see cref="TaskbarWindow.SetShowSeparators"/> 即时重绘。
         /// </summary>
         public bool? ShowSeparators { get; set; }
@@ -331,28 +376,6 @@ namespace task_monitor
         /// loopback-only.
         /// </summary>
         public string ClashApiSecret { get; set; }
-
-        /// <summary>
-        /// 启动时检查更新 (设置 → 通用): null = on (the default — only the disabled state
-        /// is ever written). Once per launch <see cref="UpdateChecker"/> reads the latest
-        /// release tag from the configured <see cref="UpdateSource"/> and prompts when a
-        /// newer version exists. Takes effect on the next startup.
-        /// </summary>
-        public bool? UpdateCheckEnabled { get; set; }
-
-        /// <summary>
-        /// 更新源 (设置 → 通用): "cnb" (null, the default — the releases page's
-        /// server-rendered HTML is scraped, since CNB's OpenAPI requires a login even for
-        /// public repos) or "github" (the anonymous releases JSON API). Only the
-        /// non-default choice is ever written.
-        /// </summary>
-        public string UpdateSource { get; set; }
-
-        /// <summary>
-        /// The release tag the user dismissed with 不再提醒 (e.g. "v1.0.1"), null = none.
-        /// That exact version is never prompted again; a still newer one is.
-        /// </summary>
-        public string IgnoredUpdateVersion { get; set; }
 
         public static string FilePath { get; } =
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.yaml");

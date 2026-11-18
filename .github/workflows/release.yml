@@ -1,5 +1,8 @@
 # 打 v* tag 推送后自动发布：windows-latest 构建单文件 exe → GitHub Release → CNB Release（镜像）。
 # 发布文案 = CHANGELOG.md 中该 tag 的段落（手写，缺失/为空直接 fail）。
+# 构建、产物命名与 sha256 统一由 tools/pack.ps1 产出（dist\pack-manifest.txt 是唯一来源）。
+# 签名：配置 secret SIGN_PFX_BASE64（+ 可选 SIGN_PFX_PASSWORD）后自动 Authenticode 签名；
+#      未配置时只提示"未簽名"，不阻断发布。CNB 步骤在缺 CNB_TOKEN / vars.CNB_REPO 时整步跳过。
 # CNB_TOKEN secret 需要 repo-code 读写（推 tag）+ repo-contents 读写（创建 release / 上传附件）。
 name: Release
 
@@ -13,36 +16,79 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    # CNB 镜像在本 fork 里是可选的：两者缺一就把 CNB 步骤整体跳过（step 级 if 只能读 env/vars）
+    env:
+      CNB_ENABLED: ${{ secrets.CNB_TOKEN != '' && vars.CNB_REPO != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # 推 tag 到 CNB 镜像需要完整历史（浅克隆缺祖先提交无法推送）
 
-      # 发版 tag 必须与 csproj <Version> 一致（版本号唯一来源，SDK 据此生成
+      # 发版 tag 必须与 csproj 版本一致（版本号唯一来源，SDK 据此生成
       # AssemblyInformationalVersion —— 软件内"关于"版本号）——不一致直接失败，
       # 绝不让"关于"版本号和发版标签脱节。
-      - name: Verify tag matches csproj Version
+      # tag 可写 v<Version>（如 v2027.11.18）或 v<InformationalVersion>（如 v2027.11.18.BM），
+      # 因为打包时优先用 InformationalVersion 命名产物。
+      - name: Verify tag matches csproj version
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME -replace '^v', ''
-          $m = Select-String -Path task_monitor.csproj -Pattern '<Version>([^<]+)</Version>'
-          if (-not $m) { throw '<Version> not found in task_monitor.csproj' }
-          $ver = $m.Matches[0].Groups[1].Value
-          if ($ver -ne $tag) { throw "tag $($env:GITHUB_REF_NAME) != csproj <Version> $ver —— 先发版前同步 task_monitor.csproj" }
-          Write-Host "version check OK: $ver"
+          $text = [IO.File]::ReadAllText('task_monitor.csproj', [Text.Encoding]::UTF8)
+          $vm = [regex]::Match($text, '<Version>\s*([^<]+?)\s*</Version>')
+          if (-not $vm.Success) { throw '<Version> not found in task_monitor.csproj' }
+          $ver = $vm.Groups[1].Value.Trim()
+          $im = [regex]::Match($text, '<InformationalVersion>\s*([^<]+?)\s*</InformationalVersion>')
+          $info = ''
+          if ($im.Success) { $info = $im.Groups[1].Value.Trim() }
+          # tag 允许匹配 <Version> 或 <InformationalVersion>，两者都不命中才失败
+          $accepted = @($ver)
+          if ($info) { $accepted += $info }
+          if ($accepted -notcontains $tag) {
+              throw "tag $($env:GITHUB_REF_NAME) 与 csproj 版本不一致：<Version>=$ver，<InformationalVersion>=$info —— 先发版前同步 task_monitor.csproj"
+          }
+          Write-Host "version check OK: tag=$tag, Version=$ver, InformationalVersion=$info"
 
-      - name: Build
-        run: dotnet build -c Release
+      # 构建 + 打包一步完成。请求签名时 tools/pack.ps1 内部调用
+      # tools/sign.ps1 -Require（证书 base64 由 sign.ps1 解码成 runner 上的临时 .pfx），
+      # 且 sha256/zip 在签名之后计算 —— 发布出去的校验和对应发布出去的二进制。
+      - name: Build, package and sign
+        shell: pwsh
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          $packArgs = @()
+          if ($env:SIGN_PFX_BASE64) {
+              Write-Host '签名凭证已配置 —— 打包后经 tools/sign.ps1 -Require 签名'
+              $packArgs += '-Sign'
+          } else {
+              $warning = '未設定簽名憑證（secrets.SIGN_PFX_BASE64），本次產物未簽名'
+              Write-Host "::warning title=未簽名::$warning"
+              Write-Host $warning
+          }
+          tools/pack.ps1 @packArgs
+          if ($LASTEXITCODE -ne 0) { throw "tools/pack.ps1 failed (exit $LASTEXITCODE)" }
 
-      - name: Changelog and asset
+          # 产物名 / 校验和文件 / 签名状态只从打包清单读，工作流不再自己拼名字
+          $manifest = @{}
+          foreach ($line in [IO.File]::ReadAllLines('dist/pack-manifest.txt')) {
+              $idx = $line.IndexOf('=')
+              if ($idx -gt 0) { $manifest[$line.Substring(0, $idx)] = $line.Substring($idx + 1) }
+          }
+          if (-not $manifest['EXE']) { throw 'dist/pack-manifest.txt 缺少 EXE' }
+          $sigLabel = if ($manifest['SIGNED'] -eq 'yes') { 'signed' } else { 'unsigned' }
+          "ASSET_NAME=$($manifest['EXE'])" >> $env:GITHUB_ENV
+          "SHA256_NAME=$($manifest['SHA256_FILE'])" >> $env:GITHUB_ENV
+          if ($env:GITHUB_STEP_SUMMARY) { "signature=$sigLabel" >> $env:GITHUB_STEP_SUMMARY }
+          Write-Host "artifact: $($manifest['EXE']) ($([math]::Round((Get-Item $manifest['EXE']).Length / 1MB, 2)) MB)"
+          Write-Host "signature: $sigLabel, sha256: $($manifest['SHA256'])"
+
+      # release 文案 = CHANGELOG.md 中该 tag 的段落（下一个 '## ' 标题前为止）。
+      # 缺失/为空直接 fail，绝不悄悄回退到自动提取 commit 列表。
+      - name: Changelog
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $exe = "bin/Release/net48/task_monitor.exe"
-          if (-not (Test-Path $exe)) { throw "artifact missing: $exe" }
-
-          # release 文案 = CHANGELOG.md 中该 tag 的段落（下一个 '## ' 标题前为止）。
-          # 缺失/为空直接 fail，绝不悄悄回退到自动提取 commit 列表。
           $heading = "^##\s+$([regex]::Escape($tag))\s*$"
           $inSection = $false
           $section = foreach ($line in Get-Content CHANGELOG.md -Encoding UTF8) {
@@ -56,27 +102,37 @@ jobs:
           if (-not $notes) { throw "CHANGELOG.md 的 '## $tag' 段落为空 —— 发版前先写好该版本文案" }
           # 走文件而非 GITHUB_ENV：不受多行 heredoc 定界符/大小限制
           Set-Content -Path release-notes.md -Value $notes -Encoding utf8 -NoNewline
-
-          # 附件名带架构（当前仅 x64）
-          $asset = "task_monitor-$tag-x64.exe"
-          Copy-Item $exe $asset
-
-          "ASSET_NAME=$asset" >> $env:GITHUB_ENV
-          Write-Host "asset: $asset ($([math]::Round((Get-Item $asset).Length / 1MB, 2)) MB)"
           Write-Host "---- release notes ----`n$notes`n-----------------------"
 
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create $env:GITHUB_REF_NAME $env:ASSET_NAME --title $env:GITHUB_REF_NAME --notes-file release-notes.md
+        run: |
+          $files = @($env:ASSET_NAME)
+          if ($env:SHA256_NAME -and (Test-Path -LiteralPath $env:SHA256_NAME)) { $files += $env:SHA256_NAME }
+          gh release create $env:GITHUB_REF_NAME @files --title $env:GITHUB_REF_NAME --notes-file release-notes.md
 
-      - name: Publish Release to CNB
+      # CNB 是可选镜像：本 fork 没有 CNB 仓库，缺 secret/vars 时下面两步直接 skipped（不失败）。
+      - name: Push tag to CNB mirror
+        if: env.CNB_ENABLED == 'true'
         shell: pwsh
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          # CNB 的 release 挂在 tag 上 —— 先把 tag（连同缺失的祖先提交）推到 CNB 镜像
-          git push "https://cnb:$($env:CNB_TOKEN)@cnb.cool/linesoft2/TaskMonitor.git" "$tag"
-          tools/publish-cnb-release.ps1 -Tag $tag -Notes (Get-Content -Raw release-notes.md)
+          if (-not $env:CNB_REPO) { throw 'vars.CNB_REPO 未設定（格式 owner/repo）' }
+          # CNB 不支持 SSH，认证 = 固定用户名 cnb + 访问令牌
+          git push "https://cnb:$($env:CNB_TOKEN)@cnb.cool/$($env:CNB_REPO).git" "$tag"
+
+      - name: Publish Release to CNB
+        if: env.CNB_ENABLED == 'true'
+        shell: pwsh
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO_SLUG: ${{ vars.CNB_REPO }} # publish-cnb-release.ps1 读它，不再回退到上游仓库
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          # 附件名可能带 InformationalVersion 后缀，统一用打包清单里的路径
+          tools/publish-cnb-release.ps1 -Tag $tag -Notes (Get-Content -Raw release-notes.md) -AssetPath $env:ASSET_NAME

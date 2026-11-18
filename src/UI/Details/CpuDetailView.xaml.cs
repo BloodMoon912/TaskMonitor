@@ -53,7 +53,16 @@ namespace task_monitor
         void IDetailView.Refresh(SystemSnapshot s)
         {
             _intervalMs = s.SampleIntervalMs;   // the history tooltip scales tick offsets by it
-            CpuHeaderPercentText.Text = $"{s.CpuPercent:F0}%";
+            // page is the natural home for (TaskMonitor has no motherboard page of its own).
+            // 温度 rides in the header next to the utilization: the big percent stays the
+            // headline, the temperature is the secondary fact the 按需感測包 provides. "--"
+            // while the pack is warming up, unloaded, or the CPU has no usable sensor.
+            CpuHeaderPercentText.Text = s.CpuTempValid
+                ? $"{s.CpuPercent:F0}% · {s.CpuTempCelsius:F0}°C"
+                : $"{s.CpuPercent:F0}%";
+            // Combined text is wider than the bare percent — drop a size so it never crowds
+            // the pin button on a 360-DIP window.
+            CpuHeaderPercentText.FontSize = s.CpuTempValid ? 18 : 22;
 
             // System summary footer (live speed / process / thread / handle / uptime).
             SpeedValueRun.Text = s.CpuCurrentMhz > 0 ? $"{s.CpuCurrentMhz / 1000.0:F2} GHz" : "—";
@@ -61,6 +70,13 @@ namespace task_monitor
             ThreadValueRun.Text = s.ThreadCount > 0 ? s.ThreadCount.ToString("N0") : "—";
             HandleValueRun.Text = s.HandleCount > 0 ? s.HandleCount.ToString("N0") : "—";
             UptimeValueRun.Text = FormatUptime(s.UptimeMs);
+            // 封装功耗 / 核心电压 (on-demand sensor pack): "—" while the pack is warming up,
+            // unloaded, or the CPU/driver exposes neither — never a stale number.
+            PowerValueRun.Text = double.IsNaN(s.CpuPowerWatts) ? "—" : $"{s.CpuPowerWatts:F1} W";
+            VoltageValueRun.Text = double.IsNaN(s.CpuVoltageV) ? "—" : $"{s.CpuVoltageV:F3} V";
+            // 風扇: the board's SuperIO chip is the only source of fan RPM here; a board that
+            // exposes nothing shows "—" — the honest answer, no invented number.
+            FanValueRun.Text = string.IsNullOrEmpty(s.MotherboardFanText) ? "—" : s.MotherboardFanText;
 
             const int HistoryCapacity = 60;
             int histCount = s.CpuHistory?.Length ?? 0;

@@ -1,3 +1,12 @@
+# ---------------------------------------------------------------------------
+# What gets committed, what never leaves this machine.
+# Rule of thumb: SOURCE goes in, ARTIFACTS and SECRETS stay out.
+#   committed .... src/, lang/, docs/, assets/, tools/, .github/, csproj, README,
+#                  CHANGELOG, LICENSE, AGENTS.md, FodyWeavers.*, App.config
+#   never ........ build output, runtime state, logs, signing keys, packaged
+#                  exes / zips / checksums (they are rebuilt from a tag)
+# ---------------------------------------------------------------------------
+
 # Build output
 bin/
 obj/
@@ -20,10 +29,41 @@ symbols/
 Thumbs.db
 Desktop.ini
 
-# Runtime artifacts (created next to the exe — normally inside bin/, guarded here
+# Runtime artifacts (created next to the exe - normally inside bin/, guarded here
 # in case the exe is ever run from the repo root)
-logs/
+/logs/
 settings.yaml
 settings.yaml.tmp
 settings.yaml.bad
 shutdown.sentinel
+/history/
+
+# ---------------------------------------------------------------------------
+# Signing material - PRIVATE. A leaked .pfx/.snk lets anyone ship malware as
+# TaskMonitor. The CI path passes the certificate through a base64 secret;
+# nothing is ever read from a committed file.
+# ---------------------------------------------------------------------------
+*.pfx
+*.p12
+*.snk
+*.pvk
+/certs/
+/.signing/
+/secrets/
+*.pfx.b64
+
+# ---------------------------------------------------------------------------
+# Release artifacts - produced by tools/pack.ps1 from a clean tree, so they are
+# rebuilt on every release and never checked in.
+# ---------------------------------------------------------------------------
+/dist/
+release-notes.md
+/publish/
+task_monitor-*-x64.exe
+task_monitor-*-x64.zip
+task_monitor-*-x64.exe.sha256
+task_monitor-*-x64.signing.txt
+
+# Local scratch (screenshots, probe output)
+/_probe/
+*.tmp

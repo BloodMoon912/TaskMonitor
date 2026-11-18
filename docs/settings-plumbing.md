@@ -138,14 +138,14 @@ Settings card behavior: the switch reports immediately; the two TextBoxes report
 **测试连接** is a separate one-shot `GET /version` probe on `Task.Run` (never the UI
 thread). Full design: [`gotchas.md` §31](gotchas.md#31-clashmihomo-代理流量).
 
-## 8. 更新检测 — `UpdateCheckEnabled` + `UpdateSource` + `IgnoredUpdateVersion`
+## 8. 更新检测 — 已移除（2026-11-18）
 
-Not part of the sampler chain: `UpdateChecker.CheckOnce` runs **once at startup** from
-`OnStartup`, so a change takes effect on the next launch (no live plumbing). The one exception
-is a *pending retry*: after a network-level failure the single retry 5 minutes out re-reads the
-live config, so switching 检查更新 off cancels it and a 更新源 change is honored — nothing to
-wire up, it reads the same `AppSettings` instance. See
-[`gotchas.md` §33](gotchas.md#33-更新检测).
+The whole startup update check was deleted at the user's request: `UpdateChecker.cs`,
+`UpdateAvailableDialog`, the 设置 → 通用 检查更新 / 更新源 expander, the three yaml keys
+(`updateCheckEnabled` / `updateSource` / `ignoredUpdateVersion`) and their localization ids.
+Nothing to wire up — there is no update path and no startup network request left. The csproj
+`<Version>` is still the only version source (the 关于 page reads it): see
+[`gotchas.md` §33](gotchas.md#33-版本号只有一个来源).
 
 ## 9. 悬浮模式 — `FloatingMode` + home + topmost/out-of-bounds/edge/fullscreen/opacity
 
@@ -253,7 +253,7 @@ A TaskbarWindow-layout chain shared by the taskbar and floating forms; no sample
   `ConfigureWindow` gives rebuilt/new overlays the same order. 网络 and GPU 两者 remain atomic two-row
   items in every orientation (geometry: architecture's overlay-layout section).
 
-## 13. 显示分割线 — `ShowSeparators` (null = on)
+## 13. 显示分割线 — `ShowSeparators` (null = off)
 
 A pure TaskbarWindow-rendering chain shared by the horizontal/vertical taskbar forms and the
 floating widget; no sampler state and no geometry change.
@@ -261,13 +261,129 @@ floating widget; no sampler state and no geometry change.
 | | |
 |---|---|
 | Setter | `App.OnShowSeparatorsChanged` → `TaskbarOverlayManager.SetShowSeparators` → `TaskbarWindow.SetShowSeparators` |
-| Window state | `_showSeparators` (volatile, default true) |
+| Window state | `_showSeparators` (volatile, default false; the App replays the saved state) |
 | WM_APP | **`WM_APP_SNAPSHOT`** — reuses the existing redraw path immediately; no resize or re-sample |
 
 Off skips only the horizontal/vertical separator passes; text, hover/selection fills, card outline,
-layout and hit-testing are unchanged. App writes only the off state (`showSeparators: false`) and
+layout and hit-testing are unchanged. Default is OFF; App writes only the on state (`showSeparators: true`) and
 logs the change. `ConfigureWindow` replays the setting to every new/rebuilt overlay, and the startup
 geometry log includes `分割线=True/False`.
+
+## 14. GPU 显存（任务栏显示 = 显存）— `GpuTaskbarContent.Vram`
+
+| | |
+|---|---|
+| Setter | `TaskbarWindow.SetGpuTempDisplay(content, tempIndex, fahrenheit)` (unchanged — the content enum grew) |
+| Sampler state | none — `GpuSampler` always publishes `VramValid`/`VramPercent` + per-adapter `GpuInfo.VramPercent` |
+| WM_APP | **YES — `WM_APP_SET_METRICS`**: 显存 is a SINGLE row that replaces the utilization row, so the packing changes (same shape as 温度) |
+
+`GpuTaskbarContent` = `{ Usage, Temperature, Both, Vram }`; the value is the dedicated-memory
+percentage over the SAME Taskmgr-style cap the detail popup prints (`DedicatedAdapterMemory +
+DedicatedSystemMemory`, nice-rounded by `ApplyTaskmgrCapRounding`), so the row and the popup can
+never disagree. Adapters without a dedicated segment (iGPU) contribute NaN and are excluded from
+the headline — the row shows `--` when no adapter has a cap. The label for this row is 显存
+(`TaskbarWindow.GpuAltLabel`), everything else reuses the 温度 row's geometry.
+
+## 15. 硬件感測包（按需）— `CpuTemperatureEnabled` (null = on)
+
+Not the usual sampler chain: the value comes from an ON-DEMAND pack, not from a per-tick sampler.
+
+| | |
+|---|---|
+| Setter | `SamplingController.SetCpuTemperatureEnabled(bool)` → `SystemSampler` → `SensorPack.Enabled` |
+| Demand | `SamplingController.RequestCpuTemperature()` → `SensorPack.Demand()` (2-minute TTL, atomic, lock-free) |
+| Consumers | `DetailWindow.ShowColumn(0)` + `DetailWindow.Refresh()` while `Column == 0` refresh the demand |
+| Publish | `SystemSnapshot.CpuTempValid` / `CpuTempCelsius` / `CpuTempSource` + `SystemSnapshot.Sensors` (`SensorEntry[]`：CPU 功耗/電壓/頻率/風扇、主板溫度、磁碟溫度、電池) |
+
+The pack opens LibreHardwareMonitor **only** while a consumer keeps refreshing the demand window
+(the CPU detail window), reads at 2 s, and unloads (`Computer.Close()`) after the window lapses.
+A failed open (no PawnIO driver) is remembered for 60 s so the tick path never retries. The LHM
+assemblies stay unfetched until the first open — see gotchas §49.
+
+## 16. CPU 任务栏显示（使用率 / 温度）— `CpuTaskbarContent`
+
+| | |
+|---|---|
+| Setter | `TaskbarOverlayManager.SetCpuTaskbarContent` → `TaskbarWindow.SetCpuTaskbarContent` |
+| Sampler state | none directly — the window also calls `SamplingController.SetCpuTaskbarTemperature` so the pack stays demanded while the row shows a temperature |
+| WM_APP | **no layout message** — the row count never changes; the label/value swap happens at draw, so `WM_APP_SNAPSHOT` is enough |
+
+Unlike the GPU's 两者 (which adds a row and therefore needs `WM_APP_SET_METRICS`), the CPU slot
+keeps ONE row and simply draws "温度 52°C" instead of "CPU 42%". The context menu's checkable
+CPU 显示温度 item is the primary switch (the settings card is muxed through the same handler).
+
+**Invariant**: a taskbar row showing the temperature has no per-tick UI refresh to hang a demand
+on, so `SystemSampler.Sample` demands from the sampling path itself while that flag is on —
+otherwise the on-demand pack would unload two minutes in and the row would read `--` forever.
+
+## 17. 界面语言 — `UiLanguage`
+
+| | |
+|---|---|
+| Setter | right-click menu → 语言 → 简体中文 / 繁體中文 / English → `App.OnLanguageChanged` |
+| Storage | `uiLanguage` = null (zh-CN) / "zh-TW" / "en" |
+| Applied | at startup (`Loc.Current = Loc.Parse(...)`) and on switch: `CloseDetail()` + close settings + drop the cached menu + `TaskbarOverlayManager.RedrawAll()` |
+
+The catalogue lives in `src/Localization/Loc.cs`; the Simplified-Chinese strings themselves are
+the keys and `Loc.ApplyOnce` walks a freshly built window's visual tree (detail pages are created
+per open, the settings shell on demand), so no live bindings are involved. Logs stay Chinese on
+purpose — they are a troubleshooting channel.
+
+## 18. 顯示項目 / 項目順序 — `ItemOrder`（8 個槽、5 個詳情欄）
+
+| | |
+|---|---|
+| Setter | `TaskbarOverlayManager.SetItemOrder(int[])` → `TaskbarWindow.SetItemOrder` |
+| Sampler state | none — the order only decides WHICH rows are packed and in what order |
+| WM_APP | **YES — `WM_APP_SET_METRICS`**: the row count (and so the overlay width) changes |
+
+Slots: `0 CPU使用率 · 1 記憶體 · 2 磁碟 · 3 GPU使用率 · 4 網路 · 5 CPU溫度 · 6 GPU溫度 · 7 GPU顯存`.
+`SampleBit(slot)` maps a slot onto the 5-bit sampling mask (0,5→0; 1→1; 2→2; 3,6,7→3; 4→4) and
+`DetailColumn(slot)` maps it onto the detail popup page (5→CPU, 6/7→GPU) — the overlay's hit test
+returns the SLOT so hover/selection highlight the row the cursor is actually on, and only the
+toggle callback translates it to a column.
+
+The extra rows used to be "content modes" on the CPU/GPU card (`cpuTaskbarContent` /
+`gpuTaskbarContent`). Those yaml keys still load: `App.EffectiveItemOrder()` folds the legacy mode
+into the order (Temperature→6 / 5, Both→3+6, Vram→7) so an old settings.yaml keeps its look. The
+right-click menu's **顯示項目** toggles 5/6/7 in and out of the order; 項目順序 then reorders them
+like any other metric.
+
+Capacity: `PackedPositionCount = 10` / `GroupCount = 5` — all eight slots fit (網路 contributes two
+rows), which is exactly the 9 rows + 1 alignment hole a 5-cell grid needs.
+
+## 19. 字體大小 — `UiFontScale`（WPF + 覆蓋層）
+
+| | |
+|---|---|
+| Setter | right-click menu → 字體大小 → `Typography.Apply` + `TaskbarOverlayManager.SetOverlayLayoutScale` |
+| Sampler state | none |
+| WM_APP | **YES — `WM_APP_SET_METRICS`** (the overlay's pitch and its 5 DirectWrite formats both change) |
+
+Two layers, one setting:
+
+- **WPF windows** (detail + settings): a `LayoutTransform` zoom plus a matching window width/height
+  (`DetailWindow.ApplyUiScale`, `SettingsWindow.ApplyUiScale`).
+- **Native overlay**: `TaskbarWindow._layoutScale` multiplies every measured pitch constant
+  (`S(dip)`) AND rebuilds the five `IDWriteTextFormat`s (DWrite has no SetFontSize — the size is
+  baked in at creation, so `RebuildTextFormats()` runs on the owning HWND's thread).
+
+Ceiling is **1.15** (`MaxLayoutScale`): a two-line block is 2×17.29 + 1 + 2×4 = 43.6 DIP inside a
+~48 DIP taskbar band, so beyond that the band physically cannot hold the pair. `MinLayoutScale`
+is 0.85.
+
+## 20. 監控歷史 — `history\*.csv` + 歷史視窗
+
+| | |
+|---|---|
+| Producer | `SystemSampler.History` (`HistoryStore.Record`, one call per tick) |
+| Consumer | right-click menu → 監控歷史 → `HistoryWindow` (reads only; never samples) |
+| I/O | append every 5 min on a pool thread + `FlushNow()` on exit; 30-day purge at startup/flush |
+
+Nine metrics (`HistoryStore.MetricNames`) are accumulated into per-minute buckets (avg/max/min/
+count); 24 h stay in memory, older days are read back from `history\yyyy-MM-dd.csv`
+(`SeriesFromFiles`, today always comes from memory). Ranges ≤24 h use the memory ring, longer ones
+(7 days) mix CSV + memory.
 
 ## Not in settings.yaml at all
 

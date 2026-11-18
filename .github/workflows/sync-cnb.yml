@@ -1,5 +1,7 @@
 # GitHub → CNB 代码镜像：main 分支和 v* tag 的每次推送都同步到 CNB 仓库。
 # 认证用 CNB 访问令牌（用户名固定 cnb），存于仓库 Secret CNB_TOKEN（需 repo-code 读写）。
+# 这是可选能力：本 fork 没有 CNB 镜像，Secret/变量缺失时整个 job 跳过，
+# 否则每次 push 都会红一个工作流（2026-11-18）。
 name: Sync to CNB
 
 on:
@@ -9,6 +11,9 @@ on:
 
 jobs:
   sync:
+    # 未配置镜像目标就直接跳过，绝不让 fork 的每次推送变成失败。
+    # job 级 if 不能用 secrets（GitHub 上下文规则），令牌的检查放到 step。
+    if: ${{ vars.CNB_REPO != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,9 +21,10 @@ jobs:
           fetch-depth: 0 # git-sync 需要完整历史
 
       - name: Sync to CNB
+        if: ${{ secrets.CNB_TOKEN != '' }}
         uses: docker://tencentcom/git-sync
         env:
-          PLUGIN_TARGET_URL: "https://cnb.cool/linesoft2/TaskMonitor.git"
+          PLUGIN_TARGET_URL: ${{ vars.CNB_REPO }}
           PLUGIN_AUTH_TYPE: "https"
           PLUGIN_USERNAME: "cnb"
           PLUGIN_PASSWORD: ${{ secrets.CNB_TOKEN }}

@@ -87,6 +87,29 @@ namespace task_monitor
         public double[] GpuHistory = Array.Empty<double>(); // 60-tick rolling headline (oldest→newest)
         public bool GpuTempValid;              // false → the taskbar temperature row shows "--"
         public double GpuTempCelsius;          // headline temperature in °C (per 温度来源); unit conversion is display-side
+        public bool GpuVramValid;              // false → the taskbar 显存 row shows "--"
+        public double GpuVramPercent;          // headline dedicated-memory % (per 显示方式)
+
+        // CPU temperature (按需感測包). Valid is false when no consumer asked, the pack could
+        // not open (no PawnIO), or the CPU exposes no usable sensor — the views then show "--".
+        public bool CpuTempValid;
+        public double CpuTempCelsius;
+        public string CpuTempSource;           // "LHM(Tctl/Tdie)" etc. — the provenance label
+
+        // Every other hardware sensor the pack / NVML published this tick (功耗、電壓、風扇、
+        // 頻率、主板溫度、磁碟溫度、電池…). Never null; empty when nothing is available.
+        public SensorEntry[] Sensors = Array.Empty<SensorEntry>();
+
+        // CPU 封裝功耗 / 核心電壓, routed out of the sensor list so the CPU page's summary
+        // rows can print them inline (NaN = 不可用). 温度 is already CpuTempCelsius.
+        public double CpuPowerWatts = double.NaN;
+        public double CpuVoltageV = double.NaN;
+
+        // 主板 (SuperIO) 風扇, routed like the two above so the CPU page can print the fan the
+        // user actually asked about without a free-floating sensor block. Empty string means
+        // "nothing readable this tick" — the board's SuperIO node can drop out. The board's
+        // temperatures are intentionally NOT collected: six unlabelled channels are noise.
+        public string MotherboardFanText = "";
         public List<GpuInfo> Gpus = new List<GpuInfo>();
     }
 
@@ -176,6 +199,32 @@ namespace task_monitor
         /// detail lists. Applied on the next tick; SamplingController re-applies it to every
         /// fresh sampler, same as <see cref="SetEnabledMask"/>.</summary>
         public void SetMergeByPath(bool on) => _mergeByPath = on;
+
+        // ---------- CPU temperature (on-demand sensor pack) ----------
+
+        private readonly SensorPack _sensors = new SensorPack();
+
+        /// <summary>分鐘桶歷史（記憶體 24h + CSV 落盤）。UI 緒可直接查詢（內部有鎖）。</summary>
+        internal HistoryStore History { get; } = new HistoryStore(null);
+        private readonly NvmlGpuSource _nvmlGpu = new NvmlGpuSource();
+        private volatile bool _cpuTempForTaskbar;
+
+        /// <summary>设置 → 采样项目 → CPU → 温度. Off unloads the pack immediately.</summary>
+        public void SetCpuTemperatureEnabled(bool on) => _sensors.Enabled = on;
+
+        /// <summary>True while the TASKBAR shows the CPU temperature instead of the
+        /// utilization. The taskbar has no per-tick UI refresh to hang the demand on, so it
+        /// demands from the sampling path itself — the pack then stays loaded exactly as long
+        /// as that row is configured to show a temperature.</summary>
+        public void SetCpuTaskbarTemperature(bool on) => _cpuTempForTaskbar = on;
+
+        /// <summary>Refreshes the sensor pack's demand window (2 min TTL). Called by every
+        /// consumer that displays a hardware sensor — a detail window's per-tick refresh.
+        /// Safe from any thread.</summary>
+        public void RequestCpuTemperature() => _sensors.Demand();
+
+        /// <summary>Whether the sensor pack currently holds an open LHM worker.</summary>
+        public bool CpuTemperatureActive => _sensors.IsActive;
 
         // 设置 → 采样项目 → 磁盘 → 显示方式 — same volatile single-writer contract as
         // _mergeByPath (written via TaskbarWindow.SetDiskDisplay). Read each tick and
@@ -346,6 +395,31 @@ namespace task_monitor
 
             var snapshot = new SystemSnapshot { NetInfo = NetInfo.Empty };
 
+            // Hardware sensors live OUTSIDE the CPU sampling switch: the pack has its own
+            // demand window, and a user may want 功耗/風扇/主板溫度 without the per-process
+            // CPU list. Tick() costs a few comparisons unless a consumer refreshed it.
+            // A taskbar row showing the temperature is itself a consumer (it has no per-tick
+            // UI refresh to hang a demand on), so it keeps the window alive from here.
+            if (_cpuTempForTaskbar) _sensors.Demand();
+            SensorReading pack = _sensors.Tick();
+            snapshot.CpuTempValid = pack.Valid && !double.IsNaN(pack.CpuCelsius);
+            snapshot.CpuTempCelsius = snapshot.CpuTempValid ? pack.CpuCelsius : 0;
+            snapshot.CpuTempSource = pack.CpuSource;
+
+            // GPU extras (功耗/频率/风扇) come from NVML, not LHM: sub-microsecond per call and
+            // no 2 s latency. Never allocated while there is no NVIDIA adapter.
+            SensorEntry[] nvml = gpuOn ? _nvmlGpu.Read() : Array.Empty<SensorEntry>();
+            SensorEntry[] packEntries = pack.Entries ?? Array.Empty<SensorEntry>();
+            if (packEntries.Length == 0) snapshot.Sensors = nvml;
+            else if (nvml.Length == 0) snapshot.Sensors = packEntries;
+            else
+            {
+                var all = new SensorEntry[packEntries.Length + nvml.Length];
+                Array.Copy(packEntries, all, packEntries.Length);
+                Array.Copy(nvml, 0, all, packEntries.Length, nvml.Length);
+                snapshot.Sensors = all;
+            }
+
             if (cpuOn)
             {
                 var cpu = Timed("CPU(PDH)", () => _cpu.Sample());
@@ -465,10 +539,34 @@ namespace task_monitor
                     snapshot.GpuHistory = gpu.History;
                     snapshot.GpuTempValid = gpu.TempValid;
                     snapshot.GpuTempCelsius = gpu.TempCelsius;
+                    snapshot.GpuVramValid = gpu.VramValid;
+                    snapshot.GpuVramPercent = gpu.VramPercent;
                     snapshot.Gpus = gpu.Gpus;
                     snapshot.TopGpuProcesses = procGpu;
                 }
             }
+
+            // Hardware sensors → the objects the UI already renders (CPU summary rows, each
+            // GPU's tab content, each disk's tab content). Runs LAST: it needs the disk and
+            // adapter lists this tick produced. Values are reset first, so an unloaded pack
+            // cannot leave yesterday's number on screen.
+            SensorRouter.Apply(snapshot, pack.Entries, nvml);
+
+            // 監控歷史: one sample per tick, accumulated into the current minute bucket.
+            // NaN marks "not available this tick" so an optional metric (GPU temp on a driver
+            // that hides it, or CPU temp before the pack loads) never drags its average to 0.
+            History.Record(new[]
+            {
+                snapshot.CpuPercent,
+                snapshot.RamPercent,
+                snapshot.DiskPercent,
+                snapshot.GpuAvailable ? snapshot.GpuPercent : double.NaN,
+                snapshot.GpuTempValid ? snapshot.GpuTempCelsius : double.NaN,
+                snapshot.GpuVramValid ? snapshot.GpuVramPercent : double.NaN,
+                snapshot.CpuTempValid ? snapshot.CpuTempCelsius : double.NaN,
+                snapshot.NetUpBytesPerSec,
+                snapshot.NetDownBytesPerSec,
+            });
 
             // svchost.exe rows → service/group names (ServiceHostMap), applied HERE on the
             // final lists — after every sampler's merge — because ProcessListMerger exempts

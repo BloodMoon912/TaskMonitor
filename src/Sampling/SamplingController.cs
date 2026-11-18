@@ -37,6 +37,8 @@ namespace task_monitor
         private volatile int _gpuDisplayIndex;
         private volatile int _gpuTempIndex = -1;
         private volatile bool _gpuTempFahrenheit;
+        private volatile bool _cpuTempEnabled = true;   // 设置 → 采样项目 → CPU → 温度 (null = on)
+        private volatile bool _cpuTempForTaskbar;       // the taskbar CPU row is showing 温度
         private volatile string _netAdapterId;
         private volatile bool _clashEnabled = true;
         private volatile string _clashApiAddress;
@@ -44,6 +46,9 @@ namespace task_monitor
         private volatile bool _publicIpLookupEnabled = true;
 
         public SystemSnapshot LatestSnapshot => _latestSnapshot;
+
+        /// <summary>監控歷史 store（UI 緒可安全查詢；sampler 未就緒時為 null）。</summary>
+        public HistoryStore History => _sampler?.History;
         public long LastTickTickCount;
         public int NativeThreadId;
         public Action<SystemSnapshot> SnapshotChanged;
@@ -156,6 +161,40 @@ namespace task_monitor
             }
         }
 
+        // ---------- CPU temperature (on-demand sensor pack) ----------
+
+        /// <summary>设置 → 采样项目 → CPU → 温度 (null = on). Mirrors the other sampler
+        /// settings: remembered on the controller so a reconstructed sampler inherits it.</summary>
+        public void SetCpuTemperatureEnabled(bool on)
+        {
+            lock (_samplerSync)
+            {
+                _cpuTempEnabled = on;
+                _sampler?.SetCpuTemperatureEnabled(on);
+            }
+        }
+
+        /// <summary>任务栏 CPU 槽正在显示温度 — the sampler keeps the pack demanded while true.
+        /// Cheap and lock-free: it is called from the taskbar's SetCpuTaskbarContent, which may
+        /// run on an overlay STA while the sampling thread is inside Sample().</summary>
+        public void SetCpuTaskbarTemperature(bool on)
+        {
+            // Remembered AND replayed: at startup the overlays configure themselves before the
+            // sampler exists (it is created on the sampling STA), so forwarding alone would drop
+            // the flag and the on-demand pack would never open until the user toggled the menu.
+            _cpuTempForTaskbar = on;
+            _sampler?.SetCpuTaskbarTemperature(on);
+        }
+
+        /// <summary>Refreshes the temperature demand window. Cheap and thread-safe by design:
+        /// it is called from a detail window's per-tick refresh (UI thread) while the sampler
+        /// thread is running, so it NEVER takes <c>_samplerSync</c> — the sampler object is
+        /// only replaced on failure, and the demand field is atomic.</summary>
+        public void RequestCpuTemperature()
+        {
+            _sampler?.RequestCpuTemperature();
+        }
+
         public void SetClashApi(bool enabled, string address, string secret)
         {
             lock (_samplerSync)
@@ -254,6 +293,8 @@ namespace task_monitor
             sampler.SetDiskDisplay(_diskDisplayMode, _diskDisplayIndex);
             sampler.SetGpuDisplay(_gpuDisplayMode, _gpuDisplayIndex);
             sampler.SetGpuTempConfig(_gpuTempIndex, _gpuTempFahrenheit);
+            sampler.SetCpuTemperatureEnabled(_cpuTempEnabled);
+            sampler.SetCpuTaskbarTemperature(_cpuTempForTaskbar);
             sampler.SetNetAdapter(_netAdapterId);
             sampler.SetClashApi(_clashEnabled, _clashApiAddress, _clashApiSecret);
             sampler.SetPublicIpLookup(_publicIpLookupEnabled);

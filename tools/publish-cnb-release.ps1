@@ -1,4 +1,4 @@
-﻿# 通过 CNB OpenAPI 创建（或复用）tag 对应的 Release 并上传附件。
+# 通过 CNB OpenAPI 创建（或复用）tag 对应的 Release 并上传附件。
 # 在 GitHub Actions release.yml 中调用，也可本地手动运行（需环境变量 CNB_TOKEN）。
 # API 参考: https://api.cnb.cool (swagger.json) —— POST /{repo}/-/releases, asset-upload-url, verify_url
 [CmdletBinding()]
@@ -15,7 +15,9 @@ $ProgressPreference = 'SilentlyContinue'   # PS5.1 下 Invoke-RestMethod 进度�
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $api   = if ($env:CNB_API_ENDPOINT) { $env:CNB_API_ENDPOINT } else { 'https://api.cnb.cool' }
-$slug  = if ($env:CNB_REPO_SLUG)    { $env:CNB_REPO_SLUG }    else { 'linesoft2/TaskMonitor' }
+# 目标仓库必须显式指定：这个 fork 没有上游的 CNB 仓库，猜到 linesoft2 只会 401
+$slug  = $env:CNB_REPO_SLUG
+if (-not $slug) { throw 'CNB_REPO_SLUG is not set (owner/repo, e.g. BloodMoon912/TaskMonitor)' }
 $token = $env:CNB_TOKEN
 if (-not $token) { throw 'CNB_TOKEN is not set' }
 
